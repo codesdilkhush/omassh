@@ -1170,7 +1170,7 @@ Panel {
 
   Process {
     id: tunnelListProc
-    command: [root.cli, "tunnel", "list"]
+    command: [root.cli, "tunnel", "list"].concat(root.configArgs)
     stdout: StdioCollector { id: tunnelListOut; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode === 0) root.applyTunnels(tunnelListOut.text)

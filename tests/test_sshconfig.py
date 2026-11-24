@@ -787,5 +787,49 @@ class ManagedIncludeTests(unittest.TestCase):
         self.assertEqual(self.status("Include omassh.config.bak\nInclude omassh.config2\n", {"omassh.config.bak": "Host a\n"})[0], "missing")
 
 
+class SystemConfigTests(unittest.TestCase):
+    def test_system_proxyjump_applies_to_user_host_and_blocks_probe(self):
+        import probe
+        with tempfile.TemporaryDirectory() as root:
+            ssh_dir = os.path.join(root, ".ssh")
+            os.makedirs(ssh_dir)
+            with open(os.path.join(ssh_dir, "config"), "w") as fh:
+                fh.write("Host srv.corp\n  Hostname 10.0.0.1\n")
+            sys_conf = os.path.join(root, "system_ssh_config")
+            with open(sys_conf, "w") as fh:
+                fh.write("Host *.corp\n  ProxyJump bastion.corp\nHost sysonly\n  Hostname 1.2.3.4\n")
+            r = sshconfig.load(ssh_dir=ssh_dir, system_path=sys_conf)
+            hosts = {h["alias"]: h for h in r["hosts"]}
+            self.assertIn("srv.corp", hosts)
+            self.assertNotIn("sysonly", hosts)
+            self.assertEqual(hosts["srv.corp"]["jump"], "bastion.corp")
+            self.assertIsNone(probe.target(hosts["srv.corp"]))
+
+    def test_user_proxyjump_none_overrides_system_jump(self):
+        with tempfile.TemporaryDirectory() as root:
+            ssh_dir = os.path.join(root, ".ssh")
+            os.makedirs(ssh_dir)
+            with open(os.path.join(ssh_dir, "config"), "w") as fh:
+                fh.write("Host srv.corp\n  Hostname 10.0.0.1\n  ProxyJump none\n")
+            sys_conf = os.path.join(root, "system_ssh_config")
+            with open(sys_conf, "w") as fh:
+                fh.write("Host *.corp\n  ProxyJump bastion.corp\n")
+            r = sshconfig.load(ssh_dir=ssh_dir, system_path=sys_conf)
+            hosts = {h["alias"]: h for h in r["hosts"]}
+            self.assertEqual(hosts["srv.corp"]["jump"], "")
+
+    def test_system_config_ignored_when_explicit_config_path_given(self):
+        with tempfile.TemporaryDirectory() as root:
+            custom_conf = os.path.join(root, "custom_config")
+            with open(custom_conf, "w") as fh:
+                fh.write("Host srv.corp\n  Hostname 10.0.0.1\n")
+            sys_conf = os.path.join(root, "system_ssh_config")
+            with open(sys_conf, "w") as fh:
+                fh.write("Host *.corp\n  ProxyJump bastion.corp\n")
+            r = sshconfig.load(config_path=custom_conf, system_path=sys_conf)
+            hosts = {h["alias"]: h for h in r["hosts"]}
+            self.assertEqual(hosts["srv.corp"]["jump"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -93,6 +93,22 @@ def read_nofollow(dfd: int, name: str, limit: int) -> tuple[bytes | None, os.sta
     return data, info
 
 
+def read_acl(dfd: int, name: str) -> bytes | None:
+    """Read the POSIX access ACL xattr if supported and present, or None."""
+    if not hasattr(os, "getxattr"):
+        return None
+    try:
+        fd = os.open(_plain(name), READ_FLAGS, dir_fd=dfd)
+    except OSError:
+        return None
+    try:
+        return os.getxattr(fd, "system.posix_acl_access")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _identity(info: os.stat_result | None) -> tuple | None:
     """The fields that tell two states of a file apart, or None for a missing file."""
     if info is None:
@@ -106,7 +122,7 @@ def remove(dfd: int, name: str) -> None:
         os.unlink(_plain(name), dir_fd=dfd)
 
 
-def _create(dfd: int, name: str, data: bytes, mode: int, gid: int | None = None) -> None:
+def _create(dfd: int, name: str, data: bytes, mode: int, gid: int | None = None, acl: bytes | None = None) -> None:
     """Create name exclusively inside dfd with exactly mode, in group gid when given, and write data to disk."""
     fd = os.open(name, CREATE_FLAGS, 0o600, dir_fd=dfd)
     try:
@@ -117,6 +133,11 @@ def _create(dfd: int, name: str, data: bytes, mode: int, gid: int | None = None)
                 except PermissionError as exc:
                     raise Refused("group", "the group of the file cannot be kept") from exc
             os.fchmod(fh.fileno(), mode)
+            if acl is not None and hasattr(os, "setxattr"):
+                try:
+                    os.setxattr(fh.fileno(), "system.posix_acl_access", acl)
+                except OSError as exc:
+                    raise Refused("acl", "the access control list cannot be kept") from exc
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
@@ -142,11 +163,12 @@ def _publish(
     check: Callable[[str], None] | None,
     backup: Callable[[], None] | None,
     gid: int | None,
+    acl: bytes | None = None,
 ) -> None:
     """Write data to a private temporary file, run the check and the guard, then take the backup and rename the file over name and sync the directory."""
     temp = ".%s.%s.tmp" % (_plain(name), secrets.token_hex(8))
     try:
-        _create(dfd, temp, data, mode, gid)
+        _create(dfd, temp, data, mode, gid, acl)
     except OSError as exc:
         raise Refused("io", exc.strerror or "cannot create") from exc
     try:
@@ -185,9 +207,10 @@ def install(
     check: Callable[[str], None] | None = None,
     backup: Callable[[], None] | None = None,
     gid: int | None = None,
+    acl: bytes | None = None,
 ) -> None:
     """Replace name with data atomically, in group gid when given, refusing with conflict unless it is still exactly the file that was read as before (None means absent)."""
-    _publish(dfd, name, data, mode, lambda: _ensure_unchanged(dfd, name, before), check, backup, gid)
+    _publish(dfd, name, data, mode, lambda: _ensure_unchanged(dfd, name, before), check, backup, gid, acl)
 
 
 def replace(dfd: int, name: str, data: bytes, mode: int) -> None:

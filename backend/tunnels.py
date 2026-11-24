@@ -200,7 +200,9 @@ def start(alias: str, config: str, ssh_path: str | None, path: str, timeout: flo
         recorded = store.load(path)["tunnels"]
         current = recorded.get(alias)
         if current is not None and verify(current, alias, PROC, boot, uid):
-            return {"version": 1, "alias": alias, "state": "up", "since": current["since"], "already": True}
+            if current.get("config", "") == config:
+                return {"version": 1, "alias": alias, "state": "up", "since": current["since"], "already": True}
+            return down(alias, "conflict", "a tunnel for %s is already running under another configuration" % alias)
         if alias not in recorded and len(recorded) >= store.MAX_TUNNELS:
             return down(alias, "limit", "%d tunnels are already running" % store.MAX_TUNNELS)
         existing = scan(args, 0, PROC, uid)

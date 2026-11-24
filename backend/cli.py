@@ -95,11 +95,18 @@ def cmd_list(args: argparse.Namespace) -> int:
     running = tunnels.live(state)
     pinned = set(state["pinned"])
     editor = hostfile.editor_state(parsed, None if args.config else hostfile.peek())
+    active_config = resolve_config(args.config) or ""
+    active_tunnels = 0
     for host in parsed["hosts"]:
         alias = host["alias"]
         host["pinned"] = alias in pinned
         host["lastUsed"] = state["recent"].get(alias, 0)
-        host["tunnel"] = {"since": running[alias]["since"]} if alias in running else None
+        is_active = alias in running and running[alias].get("config", "") == active_config
+        if is_active:
+            active_tunnels += 1
+            host["tunnel"] = {"since": running[alias]["since"]}
+        else:
+            host["tunnel"] = None
         host["editable"] = hostfile.is_editable(host, editor)
     parsed["hosts"].sort(key=lambda h: (not h["pinned"], -h["lastUsed"], h["alias"].casefold()))
     saved = commands.commands_path()
@@ -109,7 +116,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         version=3,
         editor=editor,
         sshFound=shutil.which("ssh") is not None,
-        tunnels=len(running),
+        tunnels=active_tunnels,
         tools={
             "wlCopy": shutil.which("wl-copy") is not None,
             "sshCopyId": shutil.which("ssh-copy-id") is not None,
@@ -167,7 +174,9 @@ def connect_options(args: argparse.Namespace, kind: str, alias: str) -> list[str
         options += ["--command", args.run]
     if kind == "copy-id" and not shutil.which("ssh-copy-id"):
         die(EXIT_LAUNCH, "ssh-copy-id was not found")
-    if kind != "sftp" and alias in tunnels.live(store.load(store.state_path())):
+    running = tunnels.live(store.load(store.state_path()))
+    active_config = config or ""
+    if kind != "sftp" and alias in running and running[alias].get("config", "") == active_config:
         options.append("--no-forwards")
     return options
 
@@ -308,6 +317,9 @@ def cmd_tunnel_list(args: argparse.Namespace) -> int:
     except OSError as exc:
         print("omassh: could not clean up tunnel records: %s" % exc, file=sys.stderr)
     running = tunnels.live(store.load(path))
+    if getattr(args, "config", None) is not None:
+        active_config = resolve_config(args.config) or ""
+        running = {a: r for a, r in running.items() if r.get("config", "") == active_config}
     emit({"version": 1, "tunnels": [{"alias": alias, "since": rec["since"]} for alias, rec in sorted(running.items())]})
     return 0
 
@@ -702,7 +714,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--all", action="store_true", help="stop every tunnel")
     q.add_argument("alias", metavar="ALIAS", nargs="?")
     q.set_defaults(handler=cmd_tunnel_stop)
-    actions.add_parser("list", help="print the running tunnels as JSON").set_defaults(handler=cmd_tunnel_list)
+    with_config(actions.add_parser("list", help="print the running tunnels as JSON")).set_defaults(handler=cmd_tunnel_list)
 
     p = with_config(sub.add_parser("pin", help="pin a host to the top"))
     p.add_argument("alias", metavar="ALIAS")

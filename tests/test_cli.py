@@ -705,6 +705,36 @@ class TunnelStartTests(TunnelCase):
         r, out = self.tunnel("list")
         self.assertEqual(out, {"version": 1, "tunnels": [{"alias": self.alias, "since": rec["since"]}]})
 
+    def test_cross_profile_tunnel_not_shown_as_active(self):
+        rec = self.up()
+        other_config = os.path.join(self.tmp.name, "other_config")
+        with open(other_config, "w") as fh:
+            fh.write("Host %s\n  LocalForward 5432 127.0.0.1:5432\n" % self.alias)
+        data = json.loads(self.run_cli("list", "--config", other_config).stdout)
+        hosts = {h["alias"]: h for h in data["hosts"]}
+        self.assertIsNone(hosts[self.alias]["tunnel"])
+        self.assertEqual(data["tunnels"], 0)
+        r, out = self.tunnel("list", "--config", other_config)
+        self.assertEqual(out, {"version": 1, "tunnels": []})
+
+    def test_cross_profile_tunnel_start_conflict(self):
+        self.up()
+        other_config = os.path.join(self.tmp.name, "other_config")
+        with open(other_config, "w") as fh:
+            fh.write("Host %s\n  LocalForward 5432 127.0.0.1:5432\n" % self.alias)
+        r, out = self.tunnel("start", "--config", other_config, "--", self.alias)
+        self.assertEqual(r.returncode, 5)
+        self.assertEqual((out["state"], out["reason"]), ("down", "conflict"))
+
+    def test_cross_profile_connect_does_not_suppress_forwards(self):
+        self.up()
+        other_config = os.path.join(self.tmp.name, "other_config")
+        with open(other_config, "w") as fh:
+            fh.write("Host %s\n  LocalForward 5432 127.0.0.1:5432\n" % self.alias)
+        r = self.run_cli("connect", "--config", other_config, "--", self.alias)
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("--no-forwards", self.launched())
+
     def test_a_second_start_reports_already_and_spawns_nothing(self):
         first = self.up()
         os.unlink(self.argvfile)

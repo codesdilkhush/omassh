@@ -36,6 +36,7 @@ _SPACE = " \t\r\f\v"
 _ORIGIN_BITS = {"config": 1, "managed": 2}
 _ORIGINS = {1: "config", 2: "managed", 3: "both"}
 _INCLUDE_RANK = {"missing": 0, "scoped": 1, "late": 2, "active": 3}
+SYSTEM_CONFIG_PATH = "/etc/ssh/ssh_config"
 
 
 def is_valid_alias(value: object) -> bool:
@@ -229,26 +230,27 @@ def _new_block(kind: str, pos: list[str], neg: list[str], enclosing: dict, path:
     return block
 
 
-def _host_line(args: list[str], enclosing: dict, path: str, lineno: int, ctx: _Context) -> dict:
+def _host_line(args: list[str], enclosing: dict, path: str, lineno: int, ctx: _Context, is_system: bool = False) -> dict:
     """Handle a ``Host`` line: register its aliases, open a block."""
     pos = [a for a in args if not a.startswith("!")]
     neg = [a[1:] for a in args if a.startswith("!")]
     bit = _ORIGIN_BITS["managed" if ctx.managed_real and ctx.open_files[-1] == ctx.managed_real else "config"]
-    for pattern in pos:
-        if "*" in pattern or "?" in pattern:
-            continue
-        if not is_valid_alias(pattern):
-            ctx.skipped += 1
-            continue
-        if pattern not in ctx.candidates:
-            if len(ctx.candidates) >= MAX_HOSTS:
-                ctx.incomplete = True
-                if not ctx.too_many_hosts:
-                    ctx.too_many_hosts = True
-                    ctx.error(path, "more than %d hosts, the rest are ignored" % MAX_HOSTS)
+    if not is_system:
+        for pattern in pos:
+            if "*" in pattern or "?" in pattern:
                 continue
-            ctx.candidates[pattern] = (clean(os.path.basename(path), 80), lineno)
-        ctx.origins[pattern] = ctx.origins.get(pattern, 0) | bit
+            if not is_valid_alias(pattern):
+                ctx.skipped += 1
+                continue
+            if pattern not in ctx.candidates:
+                if len(ctx.candidates) >= MAX_HOSTS:
+                    ctx.incomplete = True
+                    if not ctx.too_many_hosts:
+                        ctx.too_many_hosts = True
+                        ctx.error(path, "more than %d hosts, the rest are ignored" % MAX_HOSTS)
+                    continue
+                ctx.candidates[pattern] = (clean(os.path.basename(path), 80), lineno)
+            ctx.origins[pattern] = ctx.origins.get(pattern, 0) | bit
     return _new_block("host", pos, neg, enclosing, path, ctx)
 
 
@@ -263,28 +265,29 @@ def _note_managed(current: dict, lineno: int, ctx: _Context) -> None:
         ctx.managed_where = {"file": clean(os.path.basename(ctx.open_files[-1]), 80), "line": lineno}
 
 
-def _include(pattern: str, depth: int, current: dict, lineno: int, ctx: _Context) -> None:
+def _include(pattern: str, depth: int, current: dict, lineno: int, ctx: _Context, is_system: bool = False) -> None:
     """Read every file an Include pattern names; flags the parse incomplete for what it cannot follow."""
     if "\x00" in pattern or "%" in pattern or "$" in pattern:
         ctx.incomplete = True
         return
     pattern = os.path.expanduser(pattern)
     if not os.path.isabs(pattern):
-        pattern = os.path.join(ctx.ssh_dir, pattern)
+        base = "/etc/ssh" if is_system else ctx.ssh_dir
+        pattern = os.path.join(base, pattern)
     matches = sorted(glob.glob(pattern))
-    if ctx.managed_real and not matches and not any(ch in pattern for ch in "*?[") and os.path.realpath(pattern) == ctx.managed_real:
+    if not is_system and ctx.managed_real and not matches and not any(ch in pattern for ch in "*?[") and os.path.realpath(pattern) == ctx.managed_real:
         _note_managed(current, lineno, ctx)
     for match in matches:
-        if ctx.files >= MAX_FILES:
+        if not is_system and ctx.files >= MAX_FILES:
             ctx.incomplete = True
             ctx.error(match, "too many config files, the rest are ignored")
             return
-        if ctx.managed_real and os.path.realpath(match) == ctx.managed_real:
+        if not is_system and ctx.managed_real and os.path.realpath(match) == ctx.managed_real:
             _note_managed(current, lineno, ctx)
-        _walk(match, depth + 1, current, ctx)
+        _walk(match, depth + 1, current, ctx, is_system=is_system)
 
 
-def _walk(path: str, depth: int, enclosing: dict, ctx: _Context) -> None:
+def _walk(path: str, depth: int, enclosing: dict, ctx: _Context, is_system: bool = False) -> None:
     """Read one file, resolving its Host, Match and Include lines."""
     real = os.path.realpath(path)
     if real in ctx.open_files:
@@ -292,10 +295,11 @@ def _walk(path: str, depth: int, enclosing: dict, ctx: _Context) -> None:
     text = _read_text(path, ctx)
     if text is None:
         return
-    ctx.files += 1
+    if not is_system:
+        ctx.files += 1
     ctx.open_files.append(real)
     try:
-        _parse_lines(path, text, depth, enclosing, ctx)
+        _parse_lines(path, text, depth, enclosing, ctx, is_system=is_system)
     finally:
         ctx.open_files.pop()
 
@@ -317,7 +321,7 @@ def _forward_line(keyword: str, args: list[str], current: dict, path: str, linen
     current["fwd"].append((ctx.seq, kind, tuple(args)))
 
 
-def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, enclosing: dict, current: dict, ctx: _Context) -> dict:
+def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, enclosing: dict, current: dict, ctx: _Context, is_system: bool = False) -> dict:
     """Interpret one config line and return the block that is current afterwards."""
     try:
         args = split_args(rest)
@@ -325,7 +329,7 @@ def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, encl
         ctx.error(path, "line %d: unterminated quote" % lineno)
         return current
     if keyword == "host":
-        return _host_line(args, enclosing, path, lineno, ctx)
+        return _host_line(args, enclosing, path, lineno, ctx, is_system=is_system)
     if keyword == "match":
         return _new_block("match", [], [], enclosing, path, ctx)
     if keyword == "include":
@@ -334,7 +338,7 @@ def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, encl
             ctx.error(path, "Include nested too deeply, skipped")
             return current
         for pattern in args:
-            _include(pattern, depth, current, lineno, ctx)
+            _include(pattern, depth, current, lineno, ctx, is_system=is_system)
     elif keyword in _FORWARDS:
         _forward_line(keyword, args, current, path, lineno, ctx)
     elif keyword == "clearallforwardings":
@@ -349,14 +353,14 @@ def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, encl
     return current
 
 
-def _parse_lines(path: str, text: str, depth: int, enclosing: dict, ctx: _Context) -> None:
+def _parse_lines(path: str, text: str, depth: int, enclosing: dict, ctx: _Context, is_system: bool = False) -> None:
     """Interpret the lines of one file inside the enclosing block."""
     current = enclosing
     for lineno, raw in enumerate(text.split("\n"), 1):
         parts = split_keyword(raw)
         if parts is None:
             continue
-        current = _directive(parts[0].lower(), parts[1], path, lineno, depth, enclosing, current, ctx)
+        current = _directive(parts[0].lower(), parts[1], path, lineno, depth, enclosing, current, ctx, is_system=is_system)
         ctx.directive_seen = True
 
 
@@ -455,7 +459,12 @@ def _copy_target(alias: str, user: str, hostname: str) -> str:
     return ""
 
 
-def load(config_path: str | None = None, ssh_dir: str | None = None, managed_path: str | None = None) -> dict:
+def load(
+    config_path: str | None = None,
+    ssh_dir: str | None = None,
+    managed_path: str | None = None,
+    system_path: str | None = SYSTEM_CONFIG_PATH,
+) -> dict:
     """Parse the SSH client config and return the hosts it defines; managed_path names the plugin-owned file whose inclusion is reported."""
     ssh_dir = ssh_dir or os.path.join(os.path.expanduser("~"), ".ssh")
     path = config_path or os.path.join(ssh_dir, "config")
@@ -463,6 +472,8 @@ def load(config_path: str | None = None, ssh_dir: str | None = None, managed_pat
     found = os.path.isfile(path)
     if found:
         _walk(path, 0, ctx.global_block, ctx)
+    if config_path is None and system_path and os.path.isfile(system_path):
+        _walk(system_path, 0, ctx.global_block, ctx, is_system=True)
 
     relevant = [b for b in ctx.blocks if b["opts"] or b["fwd"]]
     match_reroutes = any(_depends_on_match(b) and any(k in _ROUTING for k in b["opts"]) for b in relevant)

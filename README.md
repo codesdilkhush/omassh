@@ -639,7 +639,8 @@ when you save a host.
 - The key file is checked when you save. If you delete it later, ssh skips it
   without an error.
 - Adding the Include line replaces `~/.ssh/config` with a new file (a rename).
-  Extended attributes and ACLs of the old file are not carried over; the owner,
+  Extended attributes of the old file are not carried over, but any POSIX access
+  control list (ACL) is preserved to prevent expanding file permissions; the owner,
   the group and the mode are kept. An editor that still holds an old
   buffer of the file can overwrite the inserted line when it saves: close it
   first.

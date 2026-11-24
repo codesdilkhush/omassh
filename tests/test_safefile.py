@@ -1,8 +1,10 @@
 import os
 import sys
 import stat
+import shutil
 import tempfile
 import unittest
+import subprocess
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -514,6 +516,25 @@ class RefusedTests(unittest.TestCase):
         exc = safefile.Refused("mode", "detail")
         self.assertEqual((exc.code, exc.detail, str(exc)), ("mode", "detail", "mode"))
         self.assertEqual(safefile.Refused("x").detail, "")
+
+
+class AclTests(Base):
+    def test_read_and_install_preserves_acl(self):
+        if not hasattr(os, "getxattr") or not shutil.which("setfacl"):
+            return
+        self.write("file_with_acl")
+        path = self.path("file_with_acl")
+        try:
+            subprocess.run(["setfacl", "-m", "u:bin:r", path], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, OSError):
+            return
+        acl = safefile.read_acl(self.dfd, "file_with_acl")
+        self.assertIsNotNone(acl)
+        _, info = safefile.read_nofollow(self.dfd, "file_with_acl", 100)
+        safefile.install(self.dfd, "file_with_acl", b"new content\n", 0o640, info, acl=acl)
+        new_acl = safefile.read_acl(self.dfd, "file_with_acl")
+        self.assertEqual(new_acl, acl)
+        self.assertEqual(self.read("file_with_acl"), b"new content\n")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ BOM = b"\xef\xbb\xbf"
 CONTEXT = 3
 LINE_CAP = 120
 MAX_MESSAGE = 200
-REFUSALS = {"owner": "owner", "mode": "mode", "too-large": "too-large"}
+REFUSALS = {"owner": "owner", "mode": "mode", "too-large": "too-large", "acl": "acl"}
 FAILURES = {"conflict": "conflict", "io": "io", "check-failed": "check-failed"}
 
 
@@ -75,6 +75,7 @@ def _read_target(snap: dict) -> str:
     if data is None or info is None:
         return "not-regular"
     snap["data"], snap["info"] = data, info
+    snap["acl"] = safefile.read_acl(snap["dfd"], os.path.basename(snap["target"]))
     if info.st_nlink != 1:
         return "links"
     if os.geteuid() != 0 and info.st_gid != os.getegid() and info.st_gid not in os.getgroups():
@@ -192,7 +193,17 @@ def _install(snap: dict, new: bytes) -> str:
         old = snap["data"]
         mode = snap["info"].st_mode & 0o644
         check = _candidate_check(os.path.dirname(snap["target"]))
-        safefile.install(snap["dfd"], os.path.basename(snap["target"]), new, mode, snap["info"], check, lambda: safefile.create_exclusive(sfd, name, old), snap["info"].st_gid)
+        safefile.install(
+            snap["dfd"],
+            os.path.basename(snap["target"]),
+            new,
+            mode,
+            snap["info"],
+            check,
+            lambda: safefile.create_exclusive(sfd, name, old),
+            snap["info"].st_gid,
+            snap.get("acl"),
+        )
     finally:
         os.close(sfd)
     return os.path.join(ssh, name)
