@@ -8,10 +8,18 @@
 </div>
 
 An [Omarchy](https://omarchy.org) bar plugin that turns your `~/.ssh/config`
-into a host picker: click the terminal icon, type a few letters, press Enter,
+into a host picker: click the SSH icon, type a few letters, press Enter,
 and you are in a terminal connected to that host. Think of it as a small,
 keyboard-first "saved hosts" list, built on plain OpenSSH, so everything keeps
 working outside the plugin too.
+
+<p align="center">
+  <img src="assets/screenshots/bar-widget.png" width="300" alt="The OmaSSH icon in the Omarchy bar">
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/host-list.png" width="420" alt="The OmaSSH popup listing hosts from ~/.ssh/config">
+</p>
 
 ## Features
 
@@ -92,6 +100,11 @@ Host prod-db
 ```
 
 ## Using it
+
+<p align="center">
+  <img src="assets/screenshots/host-actions.png" width="420" alt="The actions page of a host: forwards, terminal, SFTP, tmux, tunnel and copy rows">
+  <img src="assets/screenshots/host-actions-commands.png" width="420" alt="The same page scrolled to ssh-copy-id, VS Code and saved commands">
+</p>
 
 Host list:
 
@@ -237,6 +250,10 @@ actions page create it when it is missing and open it in your editor.
   a stale reference to the old one.
 
 ### Host editor
+
+<p align="center">
+  <img src="assets/screenshots/host-form.png" width="420" alt="The new host form">
+</p>
 
 The panel edits one file, `~/.ssh/omassh.config` (mode `0600`). Hosts you write
 by hand in `~/.ssh/config` or any other file are never edited; they stay yours.
