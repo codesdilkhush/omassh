@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Unit and security tests
+        run: python3 -I -B -m unittest discover -s tests -v
+
+      - name: Lint Python
+        if: ${{ !cancelled() }}
+        run: |
+          pip install ruff==0.15.12
+          ruff check backend tests
+
+      - name: Lint shell scripts
+        if: ${{ !cancelled() }}
+        run: shellcheck --severity=style omassh scripts/*.sh

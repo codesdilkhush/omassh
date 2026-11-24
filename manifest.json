@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "paulorivera27.omassh",
+  "name": "OmaSSH",
+  "version": "0.1.0",
+  "author": "Paulo Rivera",
+  "license": "MIT",
+  "description": "SSH host launcher for the Omarchy bar: pick a host from your ~/.ssh/config and open it in a terminal. Search, pin, recent hosts, SFTP and an optional reachability check.",
+  "tags": ["ssh", "sftp", "terminal", "remote", "servers"],
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaSSH",
+    "description": "Click for a searchable list of the hosts in your SSH config; Enter opens one in a terminal",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
