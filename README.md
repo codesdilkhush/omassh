@@ -68,7 +68,7 @@ working outside the plugin too.
 ## Requirements
 
 - Omarchy with shell-plugin support (4.x "Quattro")
-- `openssh` (provides `ssh`, `sftp` and `ssh-copy-id`), `python3` (standard library only - no virtualenv, nothing to pip install)
+- `openssh` (provides `ssh`, `sftp` and `ssh-copy-id`), `python3` (standard library only - no virtualenv and no extra Python packages)
 - A Nerd Font (Omarchy ships one), only for the panel's small buttons and action icons; the bar icon is drawn, not a glyph
 - `wl-clipboard` for the copy actions (hidden without `wl-copy`)
 - `tmux` on the remote host for the tmux action
@@ -83,7 +83,7 @@ omarchy plugin add <git-url-or-local-path> --enable
 
 For a local checkout: `omarchy plugin add /path/to/omassh --enable` (needs at
 least one commit). The widget lands in the right section of the bar; move it
-with `omarchy bar move paulorivera27.omassh --section left`.
+with `omarchy bar move io.github.paulorivera27.omassh --section left`.
 
 Then add hosts in the panel (see [Host editor](#host-editor)) or the normal
 way, in `~/.ssh/config`:
@@ -162,12 +162,12 @@ Edit page (new or existing host):
 
 Setup page (the Include line): Enter adds the line, Esc goes back.
 
-Open it from a keybinding or script: `qs -p /usr/share/omarchy/shell ipc call paulorivera27.omassh toggle`.
+Open it from a keybinding or script: `qs -p /usr/share/omarchy/shell ipc call io.github.paulorivera27.omassh toggle`.
 
 ### Settings
 
 Add to the plugin's entry in `~/.config/omarchy/shell.json` (or use
-`omarchy bar set paulorivera27.omassh <key> <value> --json`):
+`omarchy bar set io.github.paulorivera27.omassh <key> <value> --json`):
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -526,7 +526,7 @@ belongs to `host save`.
 `--config` it is just `{"enabled": false}`.
 
 The popup only calls this CLI and the editor launcher. To use it from your shell, link it:
-`ln -s ~/.config/omarchy/plugins/paulorivera27.omassh/omassh ~/.local/bin/omassh`.
+`ln -s ~/.config/omarchy/plugins/io.github.paulorivera27.omassh/omassh ~/.local/bin/omassh`.
 Pins, recent hosts and tunnel records live in `~/.local/state/omassh/state.json`
 (under `$XDG_STATE_HOME` when it is an absolute path).
 

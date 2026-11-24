@@ -9,8 +9,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "paulorivera27.omassh"
-  ipcTarget: "paulorivera27.omassh"
+  moduleName: "io.github.paulorivera27.omassh"
+  ipcTarget: "io.github.paulorivera27.omassh"
   manageIpc: false
 
   property var anchorItem: null

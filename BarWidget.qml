@@ -7,7 +7,7 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "paulorivera27.omassh"
+  moduleName: "io.github.paulorivera27.omassh"
 
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property int tunnelCount: panelLoader.item ? Math.max(0, Math.floor(Number(panelLoader.item.activeTunnels) || 0)) : 0
@@ -57,7 +57,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "paulorivera27.omassh"
+    target: "io.github.paulorivera27.omassh"
 
     /** Opens the panel. */
     function open(): void { root.open() }

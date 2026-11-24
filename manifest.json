@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "paulorivera27.omassh",
+  "id": "io.github.paulorivera27.omassh",
   "name": "OmaSSH",
   "version": "0.1.0",
   "author": "Paulo Rivera",
   "license": "MIT",
-  "description": "SSH host launcher for the Omarchy bar: pick a host from your ~/.ssh/config and open it in a terminal. Search, pin, recent hosts, SFTP and an optional reachability check.",
+  "description": "SSH host picker for the Omarchy bar: connect, SFTP and tmux from your ~/.ssh/config, background tunnels, saved commands, copy, VS Code Remote and an in-panel host editor.",
   "tags": ["ssh", "sftp", "terminal", "remote", "servers"],
   "kinds": ["bar-widget"],
   "entryPoints": {
