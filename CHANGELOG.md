@@ -75,7 +75,7 @@ First release.
   started from argument lists only with every value restricted to shell-neutral
   characters, `--` precedes every host, the only writes to your SSH files are
   `omassh.config` and the single confirmed Include line in `~/.ssh/config`
-  (with a backup), no passwords are stored, no timers, no network traffic until
+  (with a backup), no passwords are stored, no recurring timers (only a 5 second watchdog while a save, delete or include command runs), no network traffic until
   you ask for a reachability check or a tunnel. `ssh -G` runs only with `-F`
   on the file the editor generates, never on your config. Host values travel on
   stdin, never on a command line, and are limited to ASCII grammars that cannot
