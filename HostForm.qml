@@ -16,6 +16,7 @@ FocusScope {
   property bool busy: false
   property int maxHeight: Style.space(380)
   property var forwardRows: []
+  property int pendingRow: -1
   readonly property int forwardLimit: 16
 
   signal saveRequested()
@@ -126,10 +127,10 @@ FocusScope {
   function focusFirstError() {
     var first = [["alias", aliasField], ["hostname", hostnameField], ["user", userField], ["port", portField], ["proxyJump", proxyField], ["identityFile", identityField]]
     for (var i = 0; i < first.length; i++)
-      if (form.fieldError(first[i][0]) !== "") { first[i][1].input.forceActiveFocus(); return }
+      if (form.fieldError(first[i][0]) !== "") { first[i][1].input.forceActiveFocus(); form.reveal(first[i][1]); return }
     for (var j = 0; j < form.errors.length; j++) {
       var item = form.errors[j].field === "forwards" ? forwardRepeater.itemAt(form.errors[j].index) : null
-      if (item) { item.input.forceActiveFocus(); return }
+      if (item) { item.input.forceActiveFocus(); form.reveal(item); return }
     }
     if (form.fieldError("forwards") !== "") form.focusField(-1)
   }
@@ -137,9 +138,9 @@ FocusScope {
   /** Adds an empty forward row and focuses it. */
   function addRow() {
     if (form.forwardRows.length >= form.forwardLimit) return
-    form.forwardRows = form.forwardTexts().concat([""])
-    var item = forwardRepeater.itemAt(form.forwardRows.length - 1)
-    if (item) item.input.forceActiveFocus()
+    var texts = form.forwardTexts()
+    form.pendingRow = texts.length
+    form.forwardRows = texts.concat([""])
   }
 
   /** Removes one forward row and keeps the text of the others. */
@@ -149,10 +150,17 @@ FocusScope {
     form.forwardRows = texts
     form.rowRemoved(row)
     form.focusField(6 + Math.min(row, texts.length))
+    form.reveal(form.focusables()[6 + Math.min(row, texts.length)])
   }
 
-  /** Scrolls the form so that item is in view. */
+  /** Scrolls the form so that item is in view once the layout has settled. */
   function reveal(item) {
+    Qt.callLater(form.place, item)
+  }
+
+  /** Moves the scroll position so that item is fully visible. */
+  function place(item) {
+    content.forceLayout()
     var top = item.mapToItem(content, 0, 0).y - Style.space(18)
     var bottom = item.mapToItem(content, 0, item.height).y + Style.space(4)
     if (top < flick.contentY) flick.contentY = Math.max(0, top)
@@ -336,6 +344,12 @@ FocusScope {
         Repeater {
           id: forwardRepeater
           model: form.forwardRows
+          onItemAdded: function(index, item) {
+            if (index !== form.pendingRow) return
+            form.pendingRow = -1
+            item.input.forceActiveFocus()
+            form.reveal(item.input)
+          }
 
           delegate: Column {
             id: forwardItem
