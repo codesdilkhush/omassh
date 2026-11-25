@@ -26,8 +26,8 @@ MAX_FORWARDS = 32
 MAX_FORWARD_LINES = 5000
 FORWARD_FIELD = 64
 
-_RESOLVED = ("hostname", "user", "port", "proxyjump", "proxycommand", "clearallforwardings")
-_ROUTING = ("hostname", "port", "proxyjump", "proxycommand")
+_RESOLVED = ("hostname", "user", "port", "proxyjump", "proxycommand", "clearallforwardings", "canonicalizehostname")
+_ROUTING = ("hostname", "port", "proxyjump", "proxycommand", "canonicalizehostname")
 _FORWARDS = {"localforward": "L", "remoteforward": "R", "dynamicforward": "D"}
 _FORWARD_ARGS = {"L": (2,), "R": (1, 2), "D": (1,)}
 _BOOLEANS = {"yes": True, "true": True, "no": False, "false": False}
@@ -216,6 +216,10 @@ def _read_text(path: str, ctx: _Context) -> str | None:
         ctx.incomplete = True
         ctx.error(path, "file too large (over 1 MiB), skipped")
         return None
+    if data.startswith(b"\xef\xbb\xbf"):
+        ctx.incomplete = True
+        ctx.error(path, "starts with a byte order mark")
+        return None
     return data.decode("utf-8", errors="replace")
 
 
@@ -327,6 +331,7 @@ def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, encl
     try:
         args = split_args(rest)
     except ValueError:
+        ctx.incomplete = True
         ctx.error(path, "line %d: unterminated quote" % lineno)
         return current
     if keyword == "host":
@@ -348,6 +353,9 @@ def _directive(keyword: str, rest: str, path: str, lineno: int, depth: int, encl
             current["opts"].setdefault(keyword, (ctx.seq, args[0].lower()))
         else:
             ctx.error(path, "line %d: bad ClearAllForwardings value" % lineno)
+    elif keyword == "proxyjump" and (not args or args[0] == ""):
+        ctx.incomplete = True
+        ctx.error(path, "line %d: empty ProxyJump" % lineno)
     elif keyword in _RESOLVED and args:
         ctx.seq += 1
         current["opts"].setdefault(keyword, (ctx.seq, args[0]))
@@ -460,6 +468,22 @@ def _copy_target(alias: str, user: str, hostname: str) -> str:
     return ""
 
 
+def _root_present(path: str, ctx: _Context) -> bool:
+    """True when path should be walked; missing path is False quietly, while broken symlinks or stat errors mark incomplete."""
+    try:
+        os.stat(path)
+        return True
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            ctx.incomplete = True
+            ctx.error(path, "broken symbolic link")
+        return False
+    except OSError as exc:
+        ctx.incomplete = True
+        ctx.error(path, exc.strerror or "cannot stat")
+        return False
+
+
 def load(
     config_path: str | None = None,
     ssh_dir: str | None = None,
@@ -472,10 +496,10 @@ def load(
     sys_path = SYSTEM_CONFIG_PATH if system_path is _DEFAULT else system_path
     sys_dir = os.path.dirname(os.path.abspath(sys_path)) if isinstance(sys_path, str) and sys_path else ""
     ctx = _Context(ssh_dir, os.path.realpath(managed_path) if managed_path else "", sys_dir)
-    found = os.path.isfile(path)
+    found = _root_present(path, ctx)
     if found:
         _walk(path, 0, ctx.global_block, ctx)
-    if config_path is None and isinstance(sys_path, str) and sys_path and os.path.isfile(sys_path):
+    if config_path is None and isinstance(sys_path, str) and sys_path and _root_present(sys_path, ctx):
         if ctx.files >= MAX_FILES:
             ctx.incomplete = True
             ctx.error(sys_path, "too many config files, the rest are ignored")
@@ -498,19 +522,23 @@ def load(
         forwards, forwards_more = _forwards(fwds, best)
         opts = {key: value for key, (_, value) in best.items()}
         jump, proxy = _routing(best)
+        port = _parse_port(opts["port"]) if "port" in opts else None
+        bad_port = "port" in opts and port is None
+        canon = opts.get("canonicalizehostname", "").lower()
+        canon_on = bool(canon) and canon not in ("no", "false")
         hosts.append(
             {
                 "alias": alias,
                 "hostname": clean(opts.get("hostname", "")),
                 "user": clean(opts.get("user", ""), 64),
-                "port": _parse_port(opts["port"]) if "port" in opts else None,
+                "port": port,
                 "jump": clean(jump),
                 "proxy": proxy,
-                "noProbe": match_reroutes or unresolved or unsure,
+                "noProbe": match_reroutes or unresolved or unsure or canon_on or bad_port,
                 "forwards": forwards,
                 "forwardsMore": forwards_more,
-                "forwardsUncertain": match_forwards or unresolved or unsure,
-                "target": "" if match_identity or unsure else _copy_target(alias, opts.get("user", ""), opts.get("hostname", "")),
+                "forwardsUncertain": match_forwards or unresolved or unsure or canon_on,
+                "target": "" if match_identity or unsure or canon_on else _copy_target(alias, opts.get("user", ""), opts.get("hostname", "")),
                 "source": source,
                 "line": line,
                 "origin": _ORIGINS[ctx.origins.get(alias, _ORIGIN_BITS["config"])],

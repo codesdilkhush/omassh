@@ -14,6 +14,7 @@ CREATE_FLAGS = os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_WRONLY | os.O_CLOEX
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
 ACL_XATTR = "system.posix_acl_access"
 _NO_XATTR = {errno.ENODATA, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP), getattr(errno, "ENOATTR", errno.ENODATA)}
+_UNSET = object()
 
 
 class Refused(Exception):
@@ -65,12 +66,12 @@ def open_dir(path: str, create: bool = False) -> int:
     return fd
 
 
-def read_nofollow(dfd: int, name: str, limit: int) -> tuple[bytes | None, os.stat_result | None]:
-    """The bytes and status of the regular file name inside dfd, or (None, None) when it is missing; anything unsafe raises Refused."""
+def read_state(dfd: int, name: str, limit: int) -> tuple[bytes | None, os.stat_result | None, bytes | None]:
+    """The bytes, status and POSIX ACL of the regular file name inside dfd from one fd, or (None, None, None) when missing; anything unsafe raises Refused."""
     try:
         fd = os.open(_plain(name), READ_FLAGS, dir_fd=dfd)
     except FileNotFoundError:
-        return None, None
+        return None, None, None
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise Refused("symlink") from exc
@@ -87,12 +88,19 @@ def read_nofollow(dfd: int, name: str, limit: int) -> tuple[bytes | None, os.sta
             raise Refused("too-large")
         with os.fdopen(fd, "rb", closefd=False) as fh:
             data = fh.read(limit + 1)
+        if len(data) > limit:
+            raise Refused("too-large")
+        acl = read_acl_fd(fd)
     except OSError as exc:
         raise Refused("io", exc.strerror or "cannot read") from exc
     finally:
         os.close(fd)
-    if len(data) > limit:
-        raise Refused("too-large")
+    return data, info, acl
+
+
+def read_nofollow(dfd: int, name: str, limit: int) -> tuple[bytes | None, os.stat_result | None]:
+    """The bytes and status of the regular file name inside dfd, or (None, None) when it is missing; anything unsafe raises Refused."""
+    data, info, _ = read_state(dfd, name, limit)
     return data, info
 
 
@@ -102,8 +110,10 @@ def read_acl_fd(fd: int) -> bytes | None:
         return None
     try:
         return os.getxattr(fd, ACL_XATTR)
-    except OSError:
-        return None
+    except OSError as exc:
+        if exc.errno in _NO_XATTR:
+            return None
+        raise Refused("acl", exc.strerror or "cannot read access control list") from exc
 
 
 def read_acl(dfd: int, name: str) -> bytes | None:
@@ -133,15 +143,22 @@ def _acl_matches(actual: bytes | None, expected: bytes | None, mode: int) -> boo
     """True when actual matches expected (or matches expected with execute bits masked out to mode)."""
     if expected is None:
         return actual is None
+    exp = _acl_entries(expected)
     if actual is None:
-        return False
+        if exp is None or {tag for tag, _, _ in exp} != {1, 4, 32}:
+            return False
+        want_mode = ((exp[0][1] & ((mode >> 6) & 7)) << 6) | ((exp[1][1] & ((mode >> 3) & 7)) << 3) | (exp[2][1] & (mode & 7))
+        return want_mode == mode
     if actual == expected:
         return True
     act = _acl_entries(actual)
-    exp = _acl_entries(expected)
     if act is None or exp is None or len(act) != len(exp):
         return False
-    masked = {1: (mode >> 6) & 7, 16: (mode >> 3) & 7, 32: mode & 7}
+    masked = {1: (mode >> 6) & 7, 32: mode & 7}
+    if any(tag == 16 for tag, _, _ in exp):
+        masked[16] = (mode >> 3) & 7
+    else:
+        masked[4] = (mode >> 3) & 7
     for (a_tag, a_perm, a_id), (e_tag, e_perm, e_id) in zip(act, exp, strict=True):
         if a_tag != e_tag or a_id != e_id:
             return False
@@ -163,7 +180,7 @@ def _identity(info: os.stat_result | None) -> tuple | None:
     """The fields that tell two states of a file apart, or None for a missing file."""
     if info is None:
         return None
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode, info.st_gid)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode, info.st_gid, info.st_uid, info.st_nlink, info.st_ctime_ns)
 
 
 def remove(dfd: int, name: str) -> None:
@@ -180,7 +197,7 @@ def _create(dfd: int, name: str, data: bytes, mode: int, gid: int | None = None,
             if gid is not None and os.fstat(fh.fileno()).st_gid != gid:
                 try:
                     os.fchown(fh.fileno(), -1, gid)
-                except PermissionError as exc:
+                except OSError as exc:
                     raise Refused("group", "the group of the file cannot be kept") from exc
             if acl is not None:
                 if not hasattr(os, "setxattr"):
@@ -257,10 +274,23 @@ def _ensure_unchanged(dfd: int, name: str, before: os.stat_result | None, before
     try:
         current = os.stat(name, dir_fd=dfd, follow_symlinks=False)
     except FileNotFoundError:
-        current = None
+        current, current_acl = None, None
+    else:
+        if stat.S_ISREG(current.st_mode):
+            try:
+                fd = os.open(_plain(name), READ_FLAGS, dir_fd=dfd)
+            except OSError as exc:
+                raise Refused("conflict") from exc
+            try:
+                current = os.fstat(fd)
+                current_acl = read_acl_fd(fd)
+            finally:
+                os.close(fd)
+        else:
+            current_acl = None
     if _identity(current) != _identity(before):
         raise Refused("conflict")
-    if before is not None and read_acl(dfd, name) != before_acl:
+    if before is not None and current_acl != before_acl:
         raise Refused("conflict")
 
 
@@ -274,9 +304,11 @@ def install(
     backup: Callable[[], None] | None = None,
     gid: int | None = None,
     acl: bytes | None = None,
+    before_acl: bytes | None | object = _UNSET,
 ) -> None:
     """Replace name with data atomically, in group gid when given, refusing with conflict unless it is still exactly the file that was read as before (None means absent)."""
-    _publish(dfd, name, data, mode, lambda: _ensure_unchanged(dfd, name, before, acl), check, backup, gid, acl)
+    expected_acl = acl if before_acl is _UNSET else before_acl
+    _publish(dfd, name, data, mode, lambda: _ensure_unchanged(dfd, name, before, expected_acl), check, backup, gid, acl)
 
 
 def replace(dfd: int, name: str, data: bytes, mode: int) -> None:
@@ -284,10 +316,12 @@ def replace(dfd: int, name: str, data: bytes, mode: int) -> None:
     _publish(dfd, name, data, mode, None, None, None, None)
 
 
-def token(data: bytes | None, path: str) -> str:
-    """A 16 hex digit fingerprint of a path together with the exact bytes of its file, or its absence."""
+def token(data: bytes | None, path: str, metadata: bytes = b"") -> str:
+    """A 16 hex digit fingerprint of a path together with the exact bytes of its file (or its absence) and optional metadata."""
     digest = hashlib.sha256()
     digest.update(os.fsencode(path))
     digest.update(b"\0")
     digest.update(b"\0" if data is None else b"\1" + data)
+    if metadata:
+        digest.update(b"\2" + metadata)
     return digest.hexdigest()[:16]

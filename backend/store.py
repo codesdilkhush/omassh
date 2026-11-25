@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import errno
 import fcntl
 import tempfile
 import contextlib
@@ -49,7 +50,7 @@ def _valid_tunnel(rec: object) -> dict | None:
         return None
     if not (isinstance(boot, str) and BOOT_RE.fullmatch(boot)):
         return None
-    if not (config == "" or is_safe_path(config)):
+    if not (config == "" or (is_safe_path(config) and len(config) <= 4096)):
         return None
     return {"pid": pid, "start": start, "boot": boot, "since": since, "config": config}
 
@@ -110,10 +111,19 @@ def load(path: str) -> dict:
 
 
 def save(path: str, state: dict) -> None:
-    """Atomically write ``state`` (re-sanitised) with owner-only permissions."""
+    """Atomically write ``state`` (re-sanitised and bounded to MAX_STATE_BYTES) with owner-only permissions."""
     directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    payload = json.dumps(sanitize(state), sort_keys=True, separators=(",", ":"))
+    clean_state = sanitize(state)
+    payload = json.dumps(clean_state, sort_keys=True, separators=(",", ":"))
+    if len(payload.encode("utf-8")) > MAX_STATE_BYTES and clean_state["recent"]:
+        by_time = sorted(clean_state["recent"].items(), key=lambda kv: kv[1], reverse=True)
+        while by_time and len(payload.encode("utf-8")) > MAX_STATE_BYTES:
+            by_time.pop()
+            clean_state["recent"] = dict(by_time)
+            payload = json.dumps(clean_state, sort_keys=True, separators=(",", ":"))
+    if len(payload.encode("utf-8")) > MAX_STATE_BYTES:
+        raise OSError(errno.EFBIG if hasattr(errno, "EFBIG") else 27, "state exceeds maximum size")
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".state.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -164,9 +174,11 @@ def record_use(state: dict, alias: str, now: int) -> None:
 
 
 def set_pinned(state: dict, alias: str, pinned: bool) -> None:
-    """Pin alias (moving it to the end of the pins) or unpin it."""
+    """Pin alias (moving it to the end of the pins, capped at MAX_ENTRIES) or unpin it."""
     current = [a for a in state["pinned"] if a != alias]
     if pinned:
+        if len(current) >= MAX_ENTRIES:
+            current = current[-(MAX_ENTRIES - 1) :]
         current.append(alias)
     state["pinned"] = current
 

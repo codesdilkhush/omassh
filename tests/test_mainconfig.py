@@ -591,6 +591,33 @@ class AclApplyTests(Base):
         self.assertNotIn("system.posix_acl_access", os.listxattr(target))
         self.assertEqual(self.mode(target), 0o600)
 
+    def test_acl_or_mode_change_between_preview_and_apply_is_a_conflict(self):
+        dotfiles = os.path.join(self.home, "dotfiles", "ssh")
+        target = os.path.join(dotfiles, "config")
+        self.write(b"Host a\n", target, mode=0o600)
+        os.symlink(target, self.config)
+
+        shown = mainconfig.preview()
+        self.assertFalse(shown["acl"])
+        self.setfacl("-m", "u:bin:r,g::---", target)
+        result = mainconfig.apply(shown["expect"])
+        self.assertEqual((result["ok"], result["reason"]), (False, "conflict"))
+
+        shown2 = mainconfig.preview()
+        self.assertTrue(shown2["acl"])
+        self.setfacl("-b", target)
+        os.chmod(target, 0o644)
+        result2 = mainconfig.apply(shown2["expect"])
+        self.assertEqual((result2["ok"], result2["reason"]), (False, "conflict"))
+
+    def test_failed_replace_cleans_up_newly_created_backup(self):
+        self.write(b"Host a\n")
+        expect = mainconfig.preview()["expect"]
+        with mock.patch("safefile.os.replace", side_effect=OSError(1, "boom")):
+            result = mainconfig.apply(expect)
+        self.assertEqual((result["ok"], result["reason"]), (False, "io"))
+        self.assertEqual(self.backups(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

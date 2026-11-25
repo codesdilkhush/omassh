@@ -15,7 +15,7 @@ BOM = b"\xef\xbb\xbf"
 CONTEXT = 3
 LINE_CAP = 120
 MAX_MESSAGE = 200
-REFUSALS = {"owner": "owner", "mode": "mode", "too-large": "too-large", "acl": "acl"}
+REFUSALS = {"owner": "owner", "mode": "mode", "too-large": "too-large", "acl": "acl", "io": "io"}
 FAILURES = {"conflict": "conflict", "io": "io", "check-failed": "check-failed"}
 
 
@@ -69,13 +69,12 @@ def _read_target(snap: dict) -> str:
     except safefile.Refused:
         return "dir"
     try:
-        data, info = safefile.read_nofollow(snap["dfd"], os.path.basename(snap["target"]), MAX_BYTES)
+        data, info, acl = safefile.read_state(snap["dfd"], os.path.basename(snap["target"]), MAX_BYTES)
     except safefile.Refused as exc:
         return REFUSALS.get(exc.code, "not-regular")
     if data is None or info is None:
         return "not-regular"
-    snap["data"], snap["info"] = data, info
-    snap["acl"] = safefile.read_acl(snap["dfd"], os.path.basename(snap["target"]))
+    snap["data"], snap["info"], snap["acl"] = data, info, acl
     if info.st_nlink != 1:
         return "links"
     if os.geteuid() != 0 and info.st_gid != os.getegid() and info.st_gid not in os.getgroups():
@@ -113,7 +112,10 @@ def _inspect() -> dict:
     snap["refusal"] = "" if snap["create"] else _read_target(snap)
     if not snap["refusal"]:
         snap["refusal"] = _ssh_refusal()
-    snap["expect"] = "" if snap["refusal"] else safefile.token(snap["data"], path if snap["create"] else snap["target"])
+    meta = b""
+    if not snap["refusal"] and not snap["create"] and snap["info"] is not None:
+        meta = b"%d:%d:" % (snap["info"].st_mode, snap["info"].st_gid) + (snap.get("acl") or b"")
+    snap["expect"] = "" if snap["refusal"] else safefile.token(snap["data"], path if snap["create"] else snap["target"], meta)
     return snap
 
 
@@ -194,17 +196,30 @@ def _install(snap: dict, new: bytes) -> str:
         old = snap["data"]
         mode = snap["info"].st_mode & 0o644
         check = _candidate_check(os.path.dirname(snap["target"]))
-        safefile.install(
-            snap["dfd"],
-            os.path.basename(snap["target"]),
-            new,
-            mode,
-            snap["info"],
-            check,
-            lambda: safefile.create_exclusive(sfd, name, old),
-            snap["info"].st_gid,
-            snap.get("acl"),
-        )
+        created_backup = False
+
+        def make_backup() -> None:
+            """Create the timestamped backup exclusively inside ~/.ssh and remember it."""
+            nonlocal created_backup
+            safefile.create_exclusive(sfd, name, old)
+            created_backup = True
+
+        try:
+            safefile.install(
+                snap["dfd"],
+                os.path.basename(snap["target"]),
+                new,
+                mode,
+                snap["info"],
+                check,
+                make_backup,
+                snap["info"].st_gid,
+                snap.get("acl"),
+            )
+        except BaseException:
+            if created_backup:
+                safefile.remove(sfd, name)
+            raise
     finally:
         os.close(sfd)
     return os.path.join(ssh, name)
@@ -224,7 +239,7 @@ def apply(expect: str) -> dict:
         try:
             backup = _install(snap, _splice(data, insert_point(data)[0]))
         except safefile.Refused as exc:
-            return _failure(FAILURES.get(exc.code, "unsafe"), snap, exc.detail or exc.code, exc.code if exc.code in ("group", "acl") else "")
+            return _failure(FAILURES.get(exc.code, "unsafe"), snap, exc.detail or exc.code, exc.code if exc.code in ("group", "acl", "mode") else "")
         state = sshconfig.load(managed_path=hostfile.managed_path())["managedInclude"]
         return {"ok": True, "changed": True, "backup": backup, "include": state}
     finally:

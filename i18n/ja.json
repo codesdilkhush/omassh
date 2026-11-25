@@ -58,6 +58,7 @@
   "tunnel.vanished": "トンネルは開始直後に終了しました。",
   "tunnel.ambiguous": "一致する ssh プロセスが複数見つかったため、どれも追跡されませんでした。",
   "tunnel.noForwards": "このホストの SSH 構成ファイルにはポートフォワードがありません。",
+  "tunnel.conflict": "このホストのトンネルは別の設定で既に起動しています。",
   "tunnel.stopFailed": "トンネルを停止できませんでした。",
   "tunnel.limit": "実行中のトンネルが多すぎます (上限は 64 件)。先にどれか停止してください。",
   "tunnel.error": "トンネルのコマンドが失敗しました。",

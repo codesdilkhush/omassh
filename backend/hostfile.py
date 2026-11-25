@@ -24,18 +24,23 @@ def managed_path() -> str:
     return os.path.join(ssh_dir(), NAME)
 
 
-def load_managed(dfd: int) -> tuple[list | None, bytes | None, os.stat_result | None, str, str]:
-    """The hosts, bytes, status, state (missing, ok, foreign or unsafe) and refusal code of the host file inside dfd."""
+def load_managed_state(dfd: int) -> tuple[list | None, bytes | None, os.stat_result | None, str, str, bytes | None]:
+    """The hosts, bytes, status, state (missing, ok, foreign or unsafe), refusal code and POSIX ACL of the host file inside dfd."""
     try:
-        data, info = safefile.read_nofollow(dfd, NAME, hostform.MAX_BYTES)
+        data, info, acl = safefile.read_state(dfd, NAME, hostform.MAX_BYTES)
     except safefile.Refused as exc:
-        return None, None, None, "unsafe", exc.code
+        return None, None, None, "unsafe", exc.code, None
     if data is None:
-        return [], None, None, "missing", ""
+        return [], None, None, "missing", "", None
     hosts = hostform.parse(data)
     if hosts is None:
-        return None, data, info, "foreign", ""
-    return hosts, data, info, "ok", ""
+        return None, data, info, "foreign", "", acl
+    return hosts, data, info, "ok", "", acl
+
+
+def load_managed(dfd: int) -> tuple[list | None, bytes | None, os.stat_result | None, str, str]:
+    """The hosts, bytes, status, state (missing, ok, foreign or unsafe) and refusal code of the host file inside dfd."""
+    return load_managed_state(dfd)[:5]
 
 
 def peek() -> tuple[list | None, bytes | None, os.stat_result | None, str, str]:
@@ -134,7 +139,14 @@ def checker(ssh_path: str, directory: str, alias: str, host: dict) -> Callable[[
     return check
 
 
-def write_hosts(dfd: int, hosts: list[dict], old: bytes | None, before: os.stat_result | None, check: Callable[[str], None] | None = None) -> None:
+def write_hosts(
+    dfd: int,
+    hosts: list[dict],
+    old: bytes | None,
+    before: os.stat_result | None,
+    check: Callable[[str], None] | None = None,
+    before_acl: bytes | None = None,
+) -> None:
     """Replace the host file with hosts: render, self-parse, validate through check, keep the old bytes in the backup file, then install."""
     text = hostform.render(hosts)
     if len(hosts) > hostform.MAX_HOSTS or len(text) > hostform.MAX_BYTES:
@@ -142,4 +154,4 @@ def write_hosts(dfd: int, hosts: list[dict], old: bytes | None, before: os.stat_
     if hostform.parse(text) != hosts:
         raise safefile.Refused("check-failed", "the host file did not read back as written")
     backup = None if old is None else lambda: safefile.replace(dfd, BACKUP, old, 0o600)
-    safefile.install(dfd, NAME, text.encode("ascii"), 0o600, before, check, backup)
+    safefile.install(dfd, NAME, text.encode("ascii"), 0o600, before, check, backup, before_acl=before_acl)

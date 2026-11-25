@@ -179,6 +179,10 @@ class VerifyTests(FakeProcCase):
         self.add(cmdline=["/bin/sh", "/tmp/fake/ssh", *self.args])
         self.assertTrue(self.verify())
 
+    def test_multi_word_wrapper_prefix_is_rejected(self):
+        self.add(cmdline=["timeout", "5", "/usr/bin/ssh", *self.args])
+        self.assertFalse(self.verify())
+
     def test_a_relative_ssh_name_passes(self):
         self.add(cmdline=["ssh", *self.args])
         self.assertTrue(self.verify())

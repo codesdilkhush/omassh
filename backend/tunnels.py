@@ -93,13 +93,14 @@ def proc_info(pid: int, proc: str = PROC) -> dict | None:
 
 
 def matches(info: dict | None, args: list[str], uid: int) -> bool:
-    """True for a live process of ours whose command line is an ssh program followed by exactly args."""
+    """True for a live process of ours whose command line is an ssh program (at most one interpreter prefix) followed by exactly args."""
     if info is None or info["state"] in ("Z", "X") or info["uid_real"] != uid or info["uid_eff"] != uid:
         return False
     cmdline = info["cmdline"]
-    if len(cmdline) <= len(args) or cmdline[len(cmdline) - len(args) :] != args:
+    prefix_len = len(cmdline) - len(args)
+    if prefix_len not in (1, 2) or cmdline[prefix_len:] != args:
         return False
-    return os.path.basename(cmdline[len(cmdline) - len(args) - 1]) == "ssh"
+    return os.path.basename(cmdline[prefix_len - 1]) == "ssh"
 
 
 def verify(rec: dict, alias: str, proc: str, boot: str, uid: int) -> bool:
@@ -226,6 +227,8 @@ def start(alias: str, config: str, ssh_path: str | None, path: str, timeout: flo
             code = launch.wait(child, timeout)
             if code is None:
                 _abort(child)
+                for late_pid, late_start in scan(args, began, PROC, uid):
+                    _terminate({"pid": late_pid, "start": late_start, "boot": boot, "config": config}, alias, boot, uid)
                 return down(alias, "timeout", "ssh did not finish connecting in %g seconds" % timeout)
             if code != 0:
                 return down(alias, "failed", _tail(log))
@@ -233,6 +236,8 @@ def start(alias: str, config: str, ssh_path: str | None, path: str, timeout: flo
         if not found:
             return down(alias, "vanished", "ssh exited without leaving a tunnel running")
         if len(found) > 1:
+            for extra_pid, extra_start in found:
+                _terminate({"pid": extra_pid, "start": extra_start, "boot": boot, "config": config}, alias, boot, uid)
             return down(alias, "ambiguous", "several tunnels match; none was recorded")
         return _record(path, alias, found[0][0], found[0][1], boot, config)
 
@@ -270,11 +275,16 @@ def _stop_one(alias: str, path: str, boot: str, uid: int, config: str | None = N
     return outcome
 
 
+def stop_locked(alias: str, path: str, config: str | None = None) -> dict:
+    """Stop the recorded tunnel of alias while the caller already holds store.tunnel_lock(path)."""
+    outcome = _stop_one(alias, path, boot_id(), os.getuid(), config)
+    return {"version": 1, "alias": alias, "state": "up" if outcome == "running" else "down", "stopped": outcome == "stopped"}
+
+
 def stop(alias: str, path: str, config: str | None = None) -> dict:
     """Stop the recorded tunnel of alias after verifying it is still that process; unrelated processes are never signalled."""
     with store.tunnel_lock(path):
-        outcome = _stop_one(alias, path, boot_id(), os.getuid(), config)
-    return {"version": 1, "alias": alias, "state": "up" if outcome == "running" else "down", "stopped": outcome == "stopped"}
+        return stop_locked(alias, path, config)
 
 
 def stop_all(path: str, config: str | None = None) -> dict:

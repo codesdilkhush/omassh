@@ -37,10 +37,17 @@ def check(host: dict, timeout: float = CONNECT_TIMEOUT) -> dict:
 
 def probe_all(hosts: list[dict], timeout: float = CONNECT_TIMEOUT, total: float = TOTAL_TIMEOUT) -> dict:
     """Probe hosts concurrently and return {alias: {"state": ...}}."""
-    hosts = hosts[:MAX_PROBES]
     results: dict[str, dict] = {}
+    to_probe = []
+    for host in hosts[:MAX_PROBES]:
+        if target(host) is None:
+            results[host["alias"]] = {"state": "unknown"}
+        else:
+            to_probe.append(host)
+    if not to_probe:
+        return results
     pool = ThreadPoolExecutor(max_workers=WORKERS)
-    futures = {pool.submit(check, host, timeout): host["alias"] for host in hosts}
+    futures = {pool.submit(check, host, timeout): host["alias"] for host in to_probe}
     done, pending = wait(futures, timeout=total)
     for future in done:
         results[futures[future]] = future.result()

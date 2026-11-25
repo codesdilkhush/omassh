@@ -55,10 +55,13 @@ def die(code: int, message: str) -> NoReturn:
 
 
 def resolve_config(arg: str | None) -> str | None:
-    """Validate the optional ``--config`` path (from the user's settings)."""
+    """Validate and lexically normalize the optional ``--config`` path (from the user's settings)."""
     if not arg:
         return None
     path = os.path.expanduser(arg)
+    if path.startswith("//"):
+        path = "/" + path.lstrip("/")
+    path = os.path.normpath(path)
     if not sshconfig.is_safe_path(path):
         die(EXIT_USAGE, "--config must be an absolute path using only letters, digits and . _ + @ : , = / -")
     return path
@@ -271,6 +274,7 @@ def cmd_commands_edit(args: argparse.Namespace) -> int:
 
 def cmd_tunnel_start(args: argparse.Namespace) -> int:
     """Start the background tunnel of a host and print the result as JSON."""
+    config = resolve_config(args.config) or ""
     host = find_host(parse(args.config), args.alias)
     alias = host["alias"]
     if not host["forwards"] and not host["forwardsUncertain"]:
@@ -278,8 +282,17 @@ def cmd_tunnel_start(args: argparse.Namespace) -> int:
     else:
         path = store.state_path()
         try:
-            tunnels.prune(path)
-            result = tunnels.start(alias, resolve_config(args.config) or "", shutil.which("ssh"), path)
+            if not config:
+                with store.hosts_lock(path):
+                    host = find_host(parse(None), alias)
+                    if not host["forwards"] and not host["forwardsUncertain"]:
+                        result = tunnels.down(alias, "no-forwards", "this host has no port forwards in your SSH config")
+                    else:
+                        tunnels.prune(path)
+                        result = tunnels.start(alias, config, shutil.which("ssh"), path)
+            else:
+                tunnels.prune(path)
+                result = tunnels.start(alias, config, shutil.which("ssh"), path)
         except OSError as exc:
             result = tunnels.down(alias, "failed", "cannot use the state directory: %s" % (exc.strerror or "error"))
     emit(result)
@@ -443,14 +456,14 @@ def open_ssh_dir(missing: str) -> int:
         raise refusal(exc) from exc
 
 
-def usable_hosts(dfd: int) -> tuple[list, bytes | None, os.stat_result | None]:
-    """The hosts, bytes and status of the host file; Fail unless it is missing or canonical and safe."""
-    hosts, data, info, state, reason = hostfile.load_managed(dfd)
+def usable_hosts(dfd: int) -> tuple[list, bytes | None, os.stat_result | None, bytes | None]:
+    """The hosts, bytes, status and POSIX ACL of the host file; Fail unless it is missing or canonical and safe."""
+    hosts, data, info, state, reason, acl = hostfile.load_managed_state(dfd)
     if state == "foreign":
         raise Fail("foreign", "omassh.config was edited by hand")
     if state == "unsafe":
         raise Fail("unsafe", "omassh.config is not safe to change (%s)" % reason)
-    return hosts or [], data, info
+    return hosts or [], data, info, acl
 
 
 def origins(parsed: dict) -> dict[str, str]:
@@ -505,10 +518,17 @@ def current_block(request: dict, hosts: list, parsed: dict) -> dict | None:
     return current
 
 
-def write_or_fail(dfd: int, hosts: list, data: bytes | None, info: os.stat_result | None, check: Callable[[str], None] | None = None) -> None:
+def write_or_fail(
+    dfd: int,
+    hosts: list,
+    data: bytes | None,
+    info: os.stat_result | None,
+    check: Callable[[str], None] | None = None,
+    before_acl: bytes | None = None,
+) -> None:
     """hostfile.write_hosts with every refusal turned into a Fail."""
     try:
-        hostfile.write_hosts(dfd, hosts, data, info, check)
+        hostfile.write_hosts(dfd, hosts, data, info, check, before_acl=before_acl)
     except safefile.Refused as exc:
         raise refusal(exc) from exc
     except OSError as exc:
@@ -525,7 +545,7 @@ def remember(path: str, change: Callable[[dict], None]) -> None:
 
 def save_locked(request: dict, dfd: int, path: str) -> int:
     """Add, edit or rename one host under the hosts lock and print the reply."""
-    hosts, data, info = usable_hosts(dfd)
+    hosts, data, info, before_acl = usable_hosts(dfd)
     parsed = sshconfig.load(managed_path=hostfile.managed_path())
     if parsed["managedInclude"] != "active":
         raise Fail("not-included", "ssh does not read omassh.config first", include=parsed["managedInclude"], where=parsed["managedWhere"])
@@ -537,16 +557,17 @@ def save_locked(request: dict, dfd: int, path: str) -> int:
     if host is None:
         return invalid(errors)
     alias = host["alias"]
-    running = tunnels_running(path)
     renamed = bool(original) and original != alias
-    if renamed and original in running:
-        raise Fail("tunnel-up", "stop the tunnel of %s before renaming it" % original)
     ssh = shutil.which("ssh")
     if not ssh:
         raise Fail("ssh-missing", "ssh was not found")
     updated = [host if entry is current else entry for entry in hosts] if current else [*hosts, host]
     check = hostfile.checker(ssh, os.path.realpath(hostfile.ssh_dir()), alias, host)
-    write_or_fail(dfd, updated, data, info, check)
+    with store.tunnel_lock(path):
+        running = tunnels_running(path)
+        if renamed and original in running:
+            raise Fail("tunnel-up", "stop the tunnel of %s before renaming it" % original)
+        write_or_fail(dfd, updated, data, info, check, before_acl=before_acl)
     if renamed:
         after = origins(sshconfig.load(managed_path=hostfile.managed_path()))
         if original not in after and alias in after:
@@ -556,7 +577,7 @@ def save_locked(request: dict, dfd: int, path: str) -> int:
 
 def delete_locked(alias: str, expect: str, dfd: int, path: str) -> int:
     """Remove one managed host under the hosts lock, stopping its tunnel only when the plugin file alone defines the name and forgetting its pin once nothing defines it, and print the reply."""
-    hosts, data, info = usable_hosts(dfd)
+    hosts, data, info, before_acl = usable_hosts(dfd)
     current = next((host for host in hosts if host["alias"] == alias), None)
     if current is None:
         raise Fail("not-managed", "%s is not a host of the plugin file" % alias)
@@ -565,15 +586,16 @@ def delete_locked(alias: str, expect: str, dfd: int, path: str) -> int:
     before = sshconfig.load(managed_path=hostfile.managed_path())
     own = origins(before).get(alias) == "managed" and not before["incomplete"]
     stopped = False
-    if alias in tunnels_running(path) and own:
-        try:
-            outcome = tunnels.stop(alias, path, "")
-        except OSError as exc:
-            raise Fail("io", exc.strerror or "cannot stop the tunnel") from exc
-        if outcome["state"] == "up":
-            raise Fail("tunnel-running", "the tunnel of %s did not stop" % alias)
-        stopped = outcome["stopped"]
-    write_or_fail(dfd, [host for host in hosts if host is not current], data, info)
+    with store.tunnel_lock(path):
+        if alias in tunnels_running(path) and own:
+            try:
+                outcome = tunnels.stop_locked(alias, path, "")
+            except OSError as exc:
+                raise Fail("io", exc.strerror or "cannot stop the tunnel") from exc
+            if outcome["state"] == "up":
+                raise Fail("tunnel-running", "the tunnel of %s did not stop" % alias)
+            stopped = outcome["stopped"]
+        write_or_fail(dfd, [host for host in hosts if host is not current], data, info, before_acl=before_acl)
     after = sshconfig.load(managed_path=hostfile.managed_path())
     gone = alias not in origins(after) and not before["incomplete"] and not after["incomplete"]
     if gone:

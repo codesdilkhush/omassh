@@ -922,6 +922,45 @@ class SystemConfigTests(unittest.TestCase):
             hosts = {h["alias"]: h for h in r["hosts"]}
             self.assertEqual(hosts["srv.corp"]["jump"], "")
 
+    def test_canonicalize_unterminated_quote_bom_empty_jump_bad_port_and_broken_root_link(self):
+        r = self.load_with_system("CanonicalizeHostname yes\nHost web\n  Hostname 10.0.0.1\n", "")
+        self.assertTrue(r["hosts"][0]["noProbe"])
+        self.assertIsNone(probe.target(r["hosts"][0]))
+
+        r_quote = self.load_with_system('Host web\n  ProxyJump "unterminated\n', "")
+        self.assertTrue(r_quote["incomplete"])
+        self.assertTrue(r_quote["hosts"][0]["noProbe"])
+
+        r_jump = self.load_with_system('Host web\n  ProxyJump ""\n', "")
+        self.assertTrue(r_jump["incomplete"])
+        self.assertTrue(r_jump["hosts"][0]["noProbe"])
+
+        r_port = self.load_with_system("Host web\n  Port 0\n", "")
+        self.assertIsNone(r_port["hosts"][0]["port"])
+        self.assertTrue(r_port["hosts"][0]["noProbe"])
+
+        with tempfile.TemporaryDirectory() as root:
+            ssh_dir = os.path.join(root, ".ssh")
+            os.makedirs(ssh_dir)
+            os.symlink(os.path.join(root, "missing"), os.path.join(ssh_dir, "config"))
+            r_broken = sshconfig.load(ssh_dir=ssh_dir, system_path=None)
+            self.assertTrue(r_broken["incomplete"])
+            self.assertTrue(r_broken["errors"])
+
+            os.unlink(os.path.join(ssh_dir, "config"))
+            with open(os.path.join(ssh_dir, "config"), "wb") as fh:
+                fh.write(b"\xef\xbb\xbfHost web\n")
+            r_bom = sshconfig.load(ssh_dir=ssh_dir, system_path=None)
+            self.assertTrue(r_bom["incomplete"])
+            self.assertTrue(r_bom["errors"])
+
+    def test_probe_all_marks_noprobe_hosts_unknown_without_running_pool(self):
+        hosts = [{"alias": "j", "hostname": "192.0.2.1", "noProbe": True, "jump": "", "proxy": False}]
+        with mock.patch("probe.ThreadPoolExecutor") as pool_cls:
+            out = probe.probe_all(hosts)
+        pool_cls.assert_not_called()
+        self.assertEqual(out, {"j": {"state": "unknown"}})
+
 
 if __name__ == "__main__":
     unittest.main()

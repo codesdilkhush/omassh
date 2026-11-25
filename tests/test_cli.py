@@ -194,6 +194,14 @@ class ListTests(CliCase):
             r = self.run_cli("list", "--config", path)
             self.assertEqual(r.returncode, 0, (name, r.stderr))
 
+    def test_config_flag_normalizes_redundant_slashes(self):
+        other = os.path.join(self.tmp.name, "other")
+        with open(other, "w") as fh:
+            fh.write("Host elsewhere\n")
+        unnormalized = "/" + other + "/../other"
+        data = json.loads(self.run_cli("list", "--config", unnormalized).stdout)
+        self.assertEqual(data["configPath"], other)
+
 
 class ConnectTests(CliCase):
     def test_launches_terminal_with_exact_argv(self):

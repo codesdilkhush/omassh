@@ -3,6 +3,7 @@ import sys
 import stat
 import shutil
 import unittest
+import subprocess
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -471,6 +472,21 @@ class RealSshTests(Base):
         value = host()
         self.write_with_ssh(value, value)
         self.assertNotIn("pwned", self.names())
+
+    @unittest.skipUnless(hasattr(os, "getxattr") and hasattr(os, "removexattr") and shutil.which("setfacl"), "requires os xattr support and setfacl")
+    def test_write_hosts_succeeds_and_clears_acl_when_managed_file_had_an_acl(self):
+        hostfile.write_hosts(self.dfd, [host()], None, None)
+        path = os.path.join(self.ssh, hostfile.NAME)
+        try:
+            subprocess.run(["setfacl", "-m", "u:bin:r,g::---", path], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            self.skipTest("filesystem does not support POSIX ACLs: %s" % exc)
+        hosts, data, info, state, _, before_acl = hostfile.load_managed_state(self.dfd)
+        self.assertEqual(state, "ok")
+        self.assertIsNotNone(before_acl)
+        hostfile.write_hosts(self.dfd, [*hosts, host(alias="db")], data, info, before_acl=before_acl)
+        self.assertNotIn("system.posix_acl_access", os.listxattr(path))
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
 
 if __name__ == "__main__":

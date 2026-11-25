@@ -361,6 +361,26 @@ class FileTests(unittest.TestCase):
             self.assertEqual(p.exitcode, 0)
         self.assertEqual(sorted(store.load(self.path)["recent"]), sorted(aliases))
 
+    def test_save_bounds_recent_and_config_length_within_max_state_bytes(self):
+        long_cfg = "/" + "a" * 5000
+        self.assertIsNone(store.sanitize({"tunnels": {"h": record(config=long_cfg)}})["tunnels"].get("h"))
+        state = store.empty()
+        for i in range(store.MAX_ENTRIES):
+            store.set_pinned(state, "p%d" % i, True)
+        store.set_pinned(state, "extra", True)
+        self.assertEqual(len(state["pinned"]), store.MAX_ENTRIES)
+        self.assertEqual(state["pinned"][-1], "extra")
+        big_cfg = "/" + "b" * 3500
+        for i in range(60):
+            state["tunnels"]["t%d" % i] = record(config=big_cfg)
+        for i in range(store.MAX_ENTRIES):
+            state["recent"]["r%03d" % i] = 1_700_000_000 + i
+        store.save(self.path, state)
+        self.assertLessEqual(os.path.getsize(self.path), store.MAX_STATE_BYTES)
+        loaded = store.load(self.path)
+        self.assertEqual(len(loaded["tunnels"]), 60)
+        self.assertFalse(os.path.exists(self.path + ".corrupt"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -289,12 +289,20 @@ Panel {
     return data ? str(data.message, 200) : ""
   }
 
+  /** Clears host list state on load failure. */
+  function failLoad() {
+    root.hosts = []
+    root.editor = root.parseEditor(null)
+    root.configPath = ""
+    root.loadFailed = true
+  }
+
   /** Applies the JSON printed by `omassh list`. */
   function applyList(text) {
-    if (text.length > 4000000) { root.loadFailed = true; return }
+    if (text.length > 4000000) { root.failLoad(); return }
     var data = null
     try { data = JSON.parse(text) } catch (e) { data = null }
-    if (!data || !Array.isArray(data.hosts)) { root.loadFailed = true; return }
+    if (!data || !Array.isArray(data.hosts)) { root.failLoad(); return }
 
     var out = []
     for (var i = 0; i < data.hosts.length && i < 2000; i++) {
@@ -415,6 +423,7 @@ Panel {
     if (entry.reason === "vanished") return strings.t("tunnel.vanished", "The tunnel closed right after it started.")
     if (entry.reason === "ambiguous") return strings.t("tunnel.ambiguous", "Several matching ssh processes were found, so none was tracked.")
     if (entry.reason === "no-forwards") return strings.t("tunnel.noForwards", "This host has no port forwards in your SSH config.")
+    if (entry.reason === "conflict") return entry.message !== "" ? entry.message : strings.t("tunnel.conflict", "A tunnel for this host is already running under another configuration.")
     if (entry.reason === "ssh-missing") return strings.t("panel.sshMissing", "The ssh command was not found. Install openssh.")
     if (entry.reason === "stop") return strings.t("tunnel.stopFailed", "Could not stop the tunnel.")
     return strings.t("tunnel.error", "The tunnel command failed.")
@@ -560,6 +569,7 @@ Panel {
 
   /** Returns the action row of a host that is bound to a key, or null. */
   function rowForKey(host, key) {
+    if (key === "") return null
     var rows = root.actionsFor(host)
     for (var i = 0; i < rows.length; i++)
       if (rows[i].key === key) return rows[i]
@@ -735,7 +745,12 @@ Panel {
 
   /** Edits the SSH config. */
   function editConfig() {
-    root.openInEditor(root.configPath !== "" ? root.configPath : Quickshell.env("HOME") + "/.ssh/config")
+    var configured = root.setting("configPath", "")
+    var home = Quickshell.env("HOME")
+    var target = root.configPath !== "" ? root.configPath
+      : (typeof configured === "string" && configured !== "") ? configured
+      : (home !== "" ? home + "/.ssh/config" : "")
+    if (target !== "") root.openInEditor(target)
   }
 
   /** Creates the saved commands file when needed and opens it in the editor; the panel closes when that worked. */
@@ -782,6 +797,7 @@ Panel {
     root.notice = ""
     root.editorError = ""
     var key = text.toLowerCase()
+    if (key === "") return
     var actions = root.page === "actions"
     var host = actions ? root.actionHost : root.selected()
     if (key === "p") root.togglePin(host)
@@ -1095,7 +1111,7 @@ Panel {
       onStreamFinished: root.applyList(text)
     }
     onExited: function(exitCode) {
-      if (exitCode !== 0) root.loadFailed = true
+      if (exitCode !== 0) root.failLoad()
       if (root.listRefreshPending) {
         root.listRefreshPending = false
         Qt.callLater(root.reload)
@@ -1185,11 +1201,20 @@ Panel {
 
   Component.onCompleted: root.loadTunnels()
 
+  onConfigArgsChanged: {
+    root.reach = ({})
+    root.probed = false
+    root.tunnelErrors = ({})
+    root.loadTunnels()
+    if (root.opened) root.reload()
+  }
+
   onOpenedChanged: {
     if (opened) {
       root.actionError = ""
       root.notice = ""
       root.editorError = ""
+      root.tunnelErrors = ({})
       root.cursor = 0
       root.reload()
       root.loadTunnels()
@@ -1200,6 +1225,7 @@ Panel {
       root.fieldErrors = []
       root.formError = ""
       root.setupError = ""
+      root.tunnelErrors = ({})
       root.deleteConfirmOpen = false
     }
   }

@@ -61,6 +61,7 @@
   "tunnel.vanished": "The tunnel closed right after it started.",
   "tunnel.ambiguous": "Several matching ssh processes were found, so none was tracked.",
   "tunnel.noForwards": "This host has no port forwards in your SSH config.",
+  "tunnel.conflict": "A tunnel for this host is already running under another configuration.",
   "tunnel.stopFailed": "Could not stop the tunnel.",
   "tunnel.limit": "Too many tunnels are running (the limit is 64). Stop one first.",
   "tunnel.error": "The tunnel command failed.",

@@ -61,6 +61,7 @@
   "tunnel.vanished": "El túnel se cerró justo después de iniciarse.",
   "tunnel.ambiguous": "Se encontraron varios procesos ssh coincidentes, así que no se registró ninguno.",
   "tunnel.noForwards": "Este host no tiene reenvíos de puertos en tu configuración SSH.",
+  "tunnel.conflict": "Ya hay un túnel para este host en ejecución bajo otra configuración.",
   "tunnel.stopFailed": "No se pudo detener el túnel.",
   "tunnel.limit": "Hay demasiados túneles activos (el límite es 64). Detén uno primero.",
   "tunnel.error": "El comando del túnel falló.",
