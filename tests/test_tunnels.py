@@ -526,6 +526,25 @@ class StopTests(RealProcessCase):
         self.assertIsNone(proc.poll())
         self.assertIn(self.alias, store.load(self.path)["tunnels"])
 
+    def test_stop_and_stop_all_respect_config_filter(self):
+        other_cfg = "/etc/omassh/other"
+        default_proc = self.dummy(tunnels.tunnel_args("a", ""))
+        other_proc = self.dummy(tunnels.tunnel_args("b", other_cfg))
+        self.track("a", default_proc, config="")
+        self.track("b", other_proc, config=other_cfg)
+        self.assertEqual(list(tunnels.live(store.load(self.path), config="")), ["a"])
+        self.assertEqual(list(tunnels.live(store.load(self.path), config=other_cfg)), ["b"])
+        self.assertEqual(tunnels.stop("b", self.path, ""), {"version": 1, "alias": "b", "state": "down", "stopped": False})
+        self.assertIsNone(other_proc.poll())
+        self.assertIn("b", store.load(self.path)["tunnels"])
+        self.assertEqual(tunnels.stop_all(self.path, ""), {"version": 1, "stopped": ["a"]})
+        self.assertEqual(default_proc.wait(10), -signal.SIGTERM)
+        self.assertIsNone(other_proc.poll())
+        self.assertEqual(list(store.load(self.path)["tunnels"]), ["b"])
+        self.assertEqual(tunnels.stop("b", self.path, other_cfg), {"version": 1, "alias": "b", "state": "down", "stopped": True})
+        self.assertEqual(other_proc.wait(10), -signal.SIGTERM)
+        self.assertEqual(store.load(self.path)["tunnels"], {})
+
 
 class StartTests(RealProcessCase):
     UP = 'printf "%%s\\0" "$@" > "%(argv)s"\nprintf "%%s" "${SSH_AUTH_SOCK-unset}" > "%(env)s"\n( while :; do sleep 1; done ) &\nexit 0\n'

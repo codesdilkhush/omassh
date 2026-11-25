@@ -735,6 +735,24 @@ class TunnelStartTests(TunnelCase):
         self.assertEqual(r.returncode, 0)
         self.assertNotIn("--no-forwards", self.launched())
 
+    def test_custom_config_tunnel_hidden_and_protected_from_default_profile(self):
+        other_config = os.path.join(self.tmp.name, "other_config")
+        with open(other_config, "w") as fh:
+            fh.write("Host %s\n  LocalForward 5432 127.0.0.1:5432\n" % self.alias)
+        r, out = self.tunnel("start", "--config", other_config, "--", self.alias)
+        self.assertEqual((r.returncode, out["state"]), (0, "up"))
+        rec = self.state()["tunnels"][self.alias]
+        self.assertEqual(self.tunnel("list")[1], {"version": 1, "tunnels": []})
+        default_list = json.loads(self.run_cli("list").stdout)
+        self.assertIsNone({h["alias"]: h for h in default_list["hosts"]}[self.alias]["tunnel"])
+        self.assertEqual(default_list["tunnels"], 0)
+        self.assertEqual(self.tunnel("list", "--config", other_config)[1], {"version": 1, "tunnels": [{"alias": self.alias, "since": rec["since"]}]})
+        self.assertEqual(self.tunnel("stop", "--", self.alias)[1], {"version": 1, "alias": self.alias, "state": "down", "stopped": False})
+        self.assertEqual(self.tunnel("stop", "--all")[1], {"version": 1, "stopped": []})
+        self.assertTrue(self.alive(rec["pid"]))
+        self.assertEqual(self.tunnel("stop", "--config", other_config, "--", self.alias)[1], {"version": 1, "alias": self.alias, "state": "down", "stopped": True})
+        self.assertFalse(self.alive(rec["pid"]))
+
     def test_a_second_start_reports_already_and_spawns_nothing(self):
         first = self.up()
         os.unlink(self.argvfile)
@@ -2273,6 +2291,36 @@ class DeleteTunnelTests(EditorTunnelCase):
         code, out = self.save(self.plain + "-new", original=self.plain, expect=self.expect_of(self.plain), hostname="192.0.2.11")
         self.assertEqual((code, out["renamed"]), (0, True))
         self.assertEqual(self.state()["pinned"], [self.plain + "-new"])
+
+    @unittest.skipUnless(SSH, "ssh is not installed")
+    def test_other_profile_tunnel_does_not_block_rename_edit_or_stop_on_delete(self):
+        other_config = os.path.join(self.tmp.name, "other_config")
+        with open(other_config, "w") as fh:
+            fh.write("Host %s\n  LocalForward 5432 127.0.0.1:5432\n" % self.alias)
+        r, out = self.tunnel("start", "--config", other_config, "--", self.alias)
+        self.assertEqual((r.returncode, out["state"]), (0, "up"))
+        rec = self.state()["tunnels"][self.alias]
+
+        code, out = self.save(self.alias, original=self.alias, expect=self.expect_of(self.alias), hostname="192.0.2.10", forwards=["L 8080 localhost:81"])
+        self.assertEqual((code, out), (0, {"version": 1, "ok": True, "alias": self.alias, "created": False, "renamed": False, "tunnelUp": False}))
+        self.assertTrue(self.alive(rec["pid"]))
+
+        renamed = self.alias + "-new"
+        code, out = self.save(renamed, original=self.alias, expect=self.expect_of(self.alias), hostname="192.0.2.10")
+        self.assertEqual((code, out["ok"], out["renamed"]), (0, True, True))
+        self.assertTrue(self.alive(rec["pid"]))
+
+        code, out = self.delete(renamed, self.expect_of(renamed))
+        self.assertEqual((code, out["ok"], out["tunnelStopped"]), (0, True, False))
+        self.assertTrue(self.alive(rec["pid"]))
+        self.assertEqual(self.state()["tunnels"][self.alias], rec)
+
+        code, out = self.save(self.alias, hostname="192.0.2.10", forwards=["L 8080 localhost:80"])
+        self.assertEqual((code, out["ok"]), (0, True))
+        code, out = self.delete(self.alias, self.expect_of(self.alias))
+        self.assertEqual((code, out["ok"], out["tunnelStopped"]), (0, True, False))
+        self.assertTrue(self.alive(rec["pid"]))
+        self.assertEqual(self.state()["tunnels"][self.alias], rec)
 
 
 if __name__ == "__main__":

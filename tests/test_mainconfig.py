@@ -1,7 +1,9 @@
 import os
 import sys
 import stat
+import shutil
 import unittest
+import subprocess
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -98,9 +100,9 @@ class Base(unittest.TestCase):
 class PreviewTests(Base):
     def test_a_missing_file_is_created_with_just_the_line(self):
         shown = mainconfig.preview()
-        self.assertEqual(set(shown), {"include", "where", "path", "target", "create", "line", "insert", "before", "after", "expect", "refusal"})
+        self.assertEqual(set(shown), {"include", "where", "path", "target", "create", "line", "insert", "before", "after", "expect", "refusal", "acl"})
         self.assertEqual((shown["include"], shown["where"], shown["path"], shown["target"]), ("missing", None, self.config, ""))
-        self.assertEqual((shown["create"], shown["line"], shown["insert"], shown["before"], shown["after"], shown["refusal"]), (True, 1, LINE.decode(), [], [], ""))
+        self.assertEqual((shown["create"], shown["line"], shown["insert"], shown["before"], shown["after"], shown["refusal"], shown["acl"]), (True, 1, LINE.decode(), [], [], "", False))
         self.assertRegex(shown["expect"], r"\A[0-9a-f]{16}\Z")
 
     def test_a_missing_ssh_directory_is_reported_and_not_created(self):
@@ -546,6 +548,48 @@ class ApplyTests(Base):
         os.unlink(self.config)
         self.apply()
         self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+
+
+@unittest.skipUnless(hasattr(os, "getxattr") and hasattr(os, "removexattr") and shutil.which("setfacl"), "requires os xattr support and setfacl")
+class AclApplyTests(Base):
+    def setfacl(self, *args):
+        try:
+            subprocess.run(["setfacl", *args], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            self.skipTest("filesystem does not support POSIX ACLs: %s" % exc)
+
+    def test_symlink_target_acl_is_reported_in_preview_and_preserved_on_apply(self):
+        dotfiles = os.path.join(self.home, "dotfiles", "ssh")
+        target = os.path.join(dotfiles, "config")
+        self.write(b"Host a\n", target, mode=0o600)
+        os.chmod(dotfiles, 0o750)
+        self.setfacl("-m", "u:bin:r,g::---", target)
+        os.symlink(target, self.config)
+
+        shown = mainconfig.preview()
+        self.assertTrue(shown["acl"])
+        expected_acl = os.getxattr(target, "system.posix_acl_access")
+
+        result = mainconfig.apply(shown["expect"])
+        self.assertEqual((result["ok"], result["changed"], result["include"]), (True, True, "active"))
+        self.assertEqual(os.getxattr(target, "system.posix_acl_access"), expected_acl)
+        facl = subprocess.run(["getfacl", "-p", target], capture_output=True, text=True, check=True).stdout
+        self.assertIn("group::---", facl)
+        self.assertIn("user:bin:r--", facl)
+
+    def test_default_directory_acl_is_not_inherited_when_target_had_no_acl(self):
+        dotfiles = os.path.join(self.home, "dotfiles", "ssh")
+        target = os.path.join(dotfiles, "config")
+        self.write(b"Host a\n", target, mode=0o600)
+        self.setfacl("-d", "-m", "u:bin:r", dotfiles)
+        os.symlink(target, self.config)
+
+        shown = mainconfig.preview()
+        self.assertFalse(shown["acl"])
+        result = mainconfig.apply(shown["expect"])
+        self.assertEqual((result["ok"], result["changed"], result["include"]), (True, True, "active"))
+        self.assertNotIn("system.posix_acl_access", os.listxattr(target))
+        self.assertEqual(self.mode(target), 0o600)
 
 
 if __name__ == "__main__":

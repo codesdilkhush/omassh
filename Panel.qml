@@ -228,13 +228,13 @@ Panel {
 
   /** Returns the Include preview of a page that has not loaded yet. */
   function emptySetup() {
-    return { loaded: false, include: "", where: null, path: "", target: "", create: false, line: 0, insert: "", before: [], after: [], expect: "", refusal: "" }
+    return { loaded: false, include: "", where: null, path: "", target: "", create: false, line: 0, insert: "", before: [], after: [], expect: "", refusal: "", acl: false }
   }
 
   /** Returns the Include preview printed by `omassh include status`, or null when it is malformed. */
   function parseSetup(data) {
     var includes = ["missing", "active", "late", "scoped"]
-    var refusals = ["", "not-regular", "owner", "mode", "links", "dir", "too-large", "bom", "group", "managed-unsafe", "managed-foreign"]
+    var refusals = ["", "not-regular", "owner", "mode", "links", "dir", "too-large", "bom", "group", "acl", "managed-unsafe", "managed-foreign"]
     if (includes.indexOf(data.include) === -1 || refusals.indexOf(data.refusal) === -1) return null
     if (!root.within(data.path, 1024) || !root.within(data.target, 1024) || !root.within(data.insert, 200)) return null
     if (typeof data.expect !== "string" || !/^(?:[0-9a-f]{16})?$/.test(data.expect)) return null
@@ -250,7 +250,8 @@ Panel {
       before: root.contextOf(data.before),
       after: root.contextOf(data.after),
       expect: data.expect,
-      refusal: data.refusal
+      refusal: data.refusal,
+      acl: data.acl === true
     }
   }
 
@@ -552,6 +553,7 @@ Panel {
     if (preview.refusal === "too-large") return strings.t("setup.refused.tooLarge", "%1 is larger than 1 MiB.").arg(where)
     if (preview.refusal === "bom") return strings.t("setup.refused.bom", "%1 starts with a byte order mark.").arg(where)
     if (preview.refusal === "group") return strings.t("setup.refused.group", "%1 belongs to a group you are not in, so a new file could not keep its group.").arg(where)
+    if (preview.refusal === "acl") return strings.t("setup.refused.acl", "The access control list of %1 could not be kept.").arg(where)
     if (preview.refusal === "managed-foreign") return strings.t("setup.refused.managedForeign", "omassh.config was edited by hand, so ssh could refuse it. Fix or remove it first; adding the line now could break every host.")
     return strings.t("setup.refused.managedUnsafe", "omassh.config is not safe to use. Fix that first.")
   }
@@ -675,13 +677,13 @@ Panel {
   /** Stops the tunnel of a host when one is up. */
   function stopTunnel(host) {
     if (!host || root.tunnelMap[root.aliasKey(host.alias)] !== true) return
-    root.runTunnel("stop", host.alias, [root.cli, "tunnel", "stop", "--", host.alias])
+    root.runTunnel("stop", host.alias, [root.cli, "tunnel", "stop"].concat(root.configArgs).concat(["--", host.alias]))
   }
 
   /** Stops every tunnel. */
   function stopAllTunnels() {
     if (root.activeTunnels === 0) return
-    root.runTunnel("all", "", [root.cli, "tunnel", "stop", "--all"])
+    root.runTunnel("all", "", [root.cli, "tunnel", "stop", "--all"].concat(root.configArgs))
   }
 
   /** Stops the tunnel of a host when it is up, otherwise starts it. */
@@ -1841,6 +1843,17 @@ Panel {
             visible: root.setup.loaded === true && root.setup.include !== "active" && root.setup.refusal === "" && root.setup.create !== true
             width: parent.width
             text: strings.t("setup.backup", "A backup of the file is saved first. Close ~/.ssh/config in your editor before you continue.")
+            textFormat: Text.PlainText
+            color: root.dim
+            wrapMode: Text.WordWrap
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            visible: root.setup.loaded === true && root.setup.include !== "active" && root.setup.refusal === "" && root.setup.create !== true && root.setup.acl === true
+            width: parent.width
+            text: strings.t("setup.acl", "Its access control list (ACL) will be kept when the file is replaced.")
             textFormat: Text.PlainText
             color: root.dim
             wrapMode: Text.WordWrap

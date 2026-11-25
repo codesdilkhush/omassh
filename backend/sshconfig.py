@@ -37,6 +37,7 @@ _ORIGIN_BITS = {"config": 1, "managed": 2}
 _ORIGINS = {1: "config", 2: "managed", 3: "both"}
 _INCLUDE_RANK = {"missing": 0, "scoped": 1, "late": 2, "active": 3}
 SYSTEM_CONFIG_PATH = "/etc/ssh/ssh_config"
+_DEFAULT = object()
 
 
 def is_valid_alias(value: object) -> bool:
@@ -158,9 +159,10 @@ def _wild_match(pattern: str, text: str, ctx: _Context) -> bool:
 
 class _Context:
 
-    def __init__(self, ssh_dir: str, managed_real: str = "") -> None:
+    def __init__(self, ssh_dir: str, managed_real: str = "", system_dir: str = "") -> None:
         """Start an empty parse of the configuration under ssh_dir; managed_real is the real path of the plugin-owned file."""
         self.ssh_dir = ssh_dir
+        self.system_dir = system_dir
         self.managed_real = managed_real
         self.origins: dict[str, int] = {}
         self.directive_seen = False
@@ -272,13 +274,13 @@ def _include(pattern: str, depth: int, current: dict, lineno: int, ctx: _Context
         return
     pattern = os.path.expanduser(pattern)
     if not os.path.isabs(pattern):
-        base = "/etc/ssh" if is_system else ctx.ssh_dir
+        base = ctx.system_dir if is_system else ctx.ssh_dir
         pattern = os.path.join(base, pattern)
     matches = sorted(glob.glob(pattern))
     if not is_system and ctx.managed_real and not matches and not any(ch in pattern for ch in "*?[") and os.path.realpath(pattern) == ctx.managed_real:
         _note_managed(current, lineno, ctx)
     for match in matches:
-        if not is_system and ctx.files >= MAX_FILES:
+        if ctx.files >= MAX_FILES:
             ctx.incomplete = True
             ctx.error(match, "too many config files, the rest are ignored")
             return
@@ -295,8 +297,7 @@ def _walk(path: str, depth: int, enclosing: dict, ctx: _Context, is_system: bool
     text = _read_text(path, ctx)
     if text is None:
         return
-    if not is_system:
-        ctx.files += 1
+    ctx.files += 1
     ctx.open_files.append(real)
     try:
         _parse_lines(path, text, depth, enclosing, ctx, is_system=is_system)
@@ -463,17 +464,23 @@ def load(
     config_path: str | None = None,
     ssh_dir: str | None = None,
     managed_path: str | None = None,
-    system_path: str | None = SYSTEM_CONFIG_PATH,
+    system_path: str | None | object = _DEFAULT,
 ) -> dict:
     """Parse the SSH client config and return the hosts it defines; managed_path names the plugin-owned file whose inclusion is reported."""
     ssh_dir = ssh_dir or os.path.join(os.path.expanduser("~"), ".ssh")
     path = config_path or os.path.join(ssh_dir, "config")
-    ctx = _Context(ssh_dir, os.path.realpath(managed_path) if managed_path else "")
+    sys_path = SYSTEM_CONFIG_PATH if system_path is _DEFAULT else system_path
+    sys_dir = os.path.dirname(os.path.abspath(sys_path)) if isinstance(sys_path, str) and sys_path else ""
+    ctx = _Context(ssh_dir, os.path.realpath(managed_path) if managed_path else "", sys_dir)
     found = os.path.isfile(path)
     if found:
         _walk(path, 0, ctx.global_block, ctx)
-    if config_path is None and system_path and os.path.isfile(system_path):
-        _walk(system_path, 0, ctx.global_block, ctx, is_system=True)
+    if config_path is None and isinstance(sys_path, str) and sys_path and os.path.isfile(sys_path):
+        if ctx.files >= MAX_FILES:
+            ctx.incomplete = True
+            ctx.error(sys_path, "too many config files, the rest are ignored")
+        else:
+            _walk(sys_path, 0, ctx.global_block, ctx, is_system=True)
 
     relevant = [b for b in ctx.blocks if b["opts"] or b["fwd"]]
     match_reroutes = any(_depends_on_match(b) and any(k in _ROUTING for k in b["opts"]) for b in relevant)

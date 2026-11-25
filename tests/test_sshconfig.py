@@ -7,6 +7,21 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 import sshconfig
+import probe
+
+
+_SYSTEM_PATCH = None
+
+
+def setUpModule():
+    global _SYSTEM_PATCH
+    _SYSTEM_PATCH = mock.patch.object(sshconfig, "SYSTEM_CONFIG_PATH", "")
+    _SYSTEM_PATCH.start()
+
+
+def tearDownModule():
+    if _SYSTEM_PATCH is not None:
+        _SYSTEM_PATCH.stop()
 
 
 def parse(text, files=None):
@@ -788,35 +803,112 @@ class ManagedIncludeTests(unittest.TestCase):
 
 
 class SystemConfigTests(unittest.TestCase):
-    def test_system_proxyjump_applies_to_user_host_and_blocks_probe(self):
-        import probe
+    def load_with_system(self, user_config, system_config, system_files=None, user_files=None, use_default_attr=False):
         with tempfile.TemporaryDirectory() as root:
             ssh_dir = os.path.join(root, ".ssh")
             os.makedirs(ssh_dir)
-            with open(os.path.join(ssh_dir, "config"), "w") as fh:
-                fh.write("Host srv.corp\n  Hostname 10.0.0.1\n")
-            sys_conf = os.path.join(root, "system_ssh_config")
-            with open(sys_conf, "w") as fh:
-                fh.write("Host *.corp\n  ProxyJump bastion.corp\nHost sysonly\n  Hostname 1.2.3.4\n")
-            r = sshconfig.load(ssh_dir=ssh_dir, system_path=sys_conf)
-            hosts = {h["alias"]: h for h in r["hosts"]}
-            self.assertIn("srv.corp", hosts)
-            self.assertNotIn("sysonly", hosts)
-            self.assertEqual(hosts["srv.corp"]["jump"], "bastion.corp")
-            self.assertIsNone(probe.target(hosts["srv.corp"]))
+            with open(os.path.join(ssh_dir, "config"), "w", encoding="utf-8") as fh:
+                fh.write(user_config)
+            for name, body in (user_files or {}).items():
+                path = os.path.join(ssh_dir, name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            sys_dir = os.path.join(root, "etc_ssh")
+            os.makedirs(sys_dir)
+            sys_conf = os.path.join(sys_dir, "ssh_config")
+            with open(sys_conf, "w", encoding="utf-8") as fh:
+                fh.write(system_config)
+            for name, body in (system_files or {}).items():
+                path = os.path.join(sys_dir, name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            if use_default_attr:
+                with mock.patch.object(sshconfig, "SYSTEM_CONFIG_PATH", sys_conf):
+                    return sshconfig.load(ssh_dir=ssh_dir)
+            return sshconfig.load(ssh_dir=ssh_dir, system_path=sys_conf)
 
-    def test_user_proxyjump_none_overrides_system_jump(self):
-        with tempfile.TemporaryDirectory() as root:
-            ssh_dir = os.path.join(root, ".ssh")
-            os.makedirs(ssh_dir)
-            with open(os.path.join(ssh_dir, "config"), "w") as fh:
-                fh.write("Host srv.corp\n  Hostname 10.0.0.1\n  ProxyJump none\n")
-            sys_conf = os.path.join(root, "system_ssh_config")
-            with open(sys_conf, "w") as fh:
-                fh.write("Host *.corp\n  ProxyJump bastion.corp\n")
-            r = sshconfig.load(ssh_dir=ssh_dir, system_path=sys_conf)
-            hosts = {h["alias"]: h for h in r["hosts"]}
-            self.assertEqual(hosts["srv.corp"]["jump"], "")
+    def test_system_proxyjump_applies_to_user_host_and_blocks_probe(self):
+        r = self.load_with_system(
+            "Host srv.corp\n  Hostname 10.0.0.1\n",
+            "Host *.corp\n  ProxyJump bastion.corp\nHost sysonly\n  Hostname 1.2.3.4\n",
+            use_default_attr=True,
+        )
+        hosts = {h["alias"]: h for h in r["hosts"]}
+        self.assertIn("srv.corp", hosts)
+        self.assertNotIn("sysonly", hosts)
+        self.assertEqual(hosts["srv.corp"]["jump"], "bastion.corp")
+        self.assertIsNone(probe.target(hosts["srv.corp"]))
+
+    def test_system_proxycommand_applies_and_blocks_probe(self):
+        r = self.load_with_system(
+            "Host srv.corp\n  Hostname 10.0.0.1\n",
+            "Host *.corp\n  ProxyCommand ssh -W %h:%p gateway.corp\n",
+        )
+        hosts = {h["alias"]: h for h in r["hosts"]}
+        self.assertTrue(hosts["srv.corp"]["proxy"])
+        self.assertEqual(hosts["srv.corp"]["jump"], "")
+        self.assertIsNone(probe.target(hosts["srv.corp"]))
+
+    def test_system_match_block_with_routing_blocks_probe(self):
+        r = self.load_with_system(
+            "Host srv.corp\n  Hostname 10.0.0.1\nHost other\n  Hostname 10.0.0.2\n",
+            "Match host *.corp\n  ProxyJump bastion.corp\n",
+        )
+        hosts = {h["alias"]: h for h in r["hosts"]}
+        self.assertTrue(hosts["srv.corp"]["noProbe"])
+        self.assertTrue(hosts["other"]["noProbe"])
+        self.assertIsNone(probe.target(hosts["srv.corp"]))
+        self.assertIsNone(probe.target(hosts["other"]))
+
+    def test_system_include_resolves_relative_to_system_dir_and_blocks_probe(self):
+        r = self.load_with_system(
+            "Host srv.corp\n  Hostname 10.0.0.1\n",
+            "Include ssh_config.d/*.conf\n",
+            system_files={"ssh_config.d/10-jump.conf": "Host *.corp\n  ProxyJump jump.corp\n"},
+        )
+        hosts = {h["alias"]: h for h in r["hosts"]}
+        self.assertEqual(hosts["srv.corp"]["jump"], "jump.corp")
+        self.assertEqual(r["files"], 3)
+        self.assertIsNone(probe.target(hosts["srv.corp"]))
+
+    def test_system_files_respect_max_files_cap(self):
+        sys_files = {"ssh_config.d/%03d.conf" % i: "Host h%03d\n  User u\n" % i for i in range(sshconfig.MAX_FILES + 5)}
+        r = self.load_with_system(
+            "Host srv.corp\n  Hostname 10.0.0.1\n",
+            "Include ssh_config.d/*.conf\n",
+            system_files=sys_files,
+        )
+        self.assertLessEqual(r["files"], sshconfig.MAX_FILES)
+        self.assertTrue(r["incomplete"])
+        self.assertTrue(r["errors"])
+        hosts = {h["alias"]: h for h in r["hosts"]}
+        self.assertTrue(hosts["srv.corp"]["noProbe"])
+        self.assertIsNone(probe.target(hosts["srv.corp"]))
+
+    def test_user_files_at_cap_mark_incomplete_when_system_config_exists(self):
+        user_files = {"c/%03d" % i: "Host h%03d\n" % i for i in range(sshconfig.MAX_FILES - 1)}
+        r = self.load_with_system(
+            "Include c/*\n",
+            "Host *\n  ProxyJump bastion.corp\n",
+            user_files=user_files,
+        )
+        self.assertEqual(r["files"], sshconfig.MAX_FILES)
+        self.assertTrue(r["incomplete"])
+        self.assertTrue(r["errors"])
+        self.assertTrue(r["hosts"][0]["noProbe"])
+
+    def test_user_proxyjump_none_and_proxycommand_none_override_system(self):
+        r = self.load_with_system(
+            "Host direct1\n  Hostname 10.0.0.1\n  ProxyJump none\nHost direct2\n  Hostname 10.0.0.2\n  ProxyCommand none\n",
+            "Host direct1\n  ProxyJump bastion.corp\nHost direct2\n  ProxyCommand ssh -W %h:%p gw\n",
+        )
+        hosts = {h["alias"]: h for h in r["hosts"]}
+        self.assertEqual(hosts["direct1"]["jump"], "")
+        self.assertFalse(hosts["direct1"]["proxy"])
+        self.assertEqual(hosts["direct2"]["jump"], "")
+        self.assertFalse(hosts["direct2"]["proxy"])
 
     def test_system_config_ignored_when_explicit_config_path_given(self):
         with tempfile.TemporaryDirectory() as root:

@@ -123,11 +123,15 @@ def scan(args: list[str], after: int, proc: str, uid: int) -> list[tuple[int, in
     return found
 
 
-def live(state: dict, proc: str = PROC, boot_path: str = BOOT_ID_PATH, uid: int | None = None) -> dict:
-    """The tunnel records of state that still verify, by alias."""
+def live(state: dict, proc: str = PROC, boot_path: str = BOOT_ID_PATH, uid: int | None = None, config: str | None = None) -> dict:
+    """The tunnel records of state that still verify, by alias (filtered to config when given)."""
     boot = boot_id(boot_path)
     uid = os.getuid() if uid is None else uid
-    return {alias: rec for alias, rec in state["tunnels"].items() if verify(rec, alias, proc, boot, uid)}
+    return {
+        alias: rec
+        for alias, rec in state["tunnels"].items()
+        if (config is None or rec.get("config", "") == config) and verify(rec, alias, proc, boot, uid)
+    }
 
 
 def tunnel_env(env: dict, uid: int | None = None) -> dict:
@@ -253,29 +257,31 @@ def _terminate(rec: dict, alias: str, boot: str, uid: int) -> str:
         os.close(fd)
 
 
-def _stop_one(alias: str, path: str, boot: str, uid: int) -> str:
-    """Stop the recorded tunnel of alias and forget it unless it kept running."""
+def _stop_one(alias: str, path: str, boot: str, uid: int, config: str | None = None) -> str:
+    """Stop the recorded tunnel of alias and forget it unless it kept running or belongs to another config."""
     rec = store.load(path)["tunnels"].get(alias)
     if rec is None:
         return "stale"
+    if config is not None and rec.get("config", "") != config:
+        return "other"
     outcome = _terminate(rec, alias, boot, uid)
     if outcome != "running":
         store.modify(path, lambda s: store.drop_tunnel(s, alias, rec))
     return outcome
 
 
-def stop(alias: str, path: str) -> dict:
+def stop(alias: str, path: str, config: str | None = None) -> dict:
     """Stop the recorded tunnel of alias after verifying it is still that process; unrelated processes are never signalled."""
     with store.tunnel_lock(path):
-        outcome = _stop_one(alias, path, boot_id(), os.getuid())
+        outcome = _stop_one(alias, path, boot_id(), os.getuid(), config)
     return {"version": 1, "alias": alias, "state": "up" if outcome == "running" else "down", "stopped": outcome == "stopped"}
 
 
-def stop_all(path: str) -> dict:
-    """Stop every recorded tunnel; the result lists the aliases that were stopped."""
+def stop_all(path: str, config: str | None = None) -> dict:
+    """Stop every recorded tunnel (or those of config when given); the result lists the aliases that were stopped."""
     boot, uid = boot_id(), os.getuid()
     with store.tunnel_lock(path):
-        stopped = [alias for alias in sorted(store.load(path)["tunnels"]) if _stop_one(alias, path, boot, uid) == "stopped"]
+        stopped = [alias for alias in sorted(store.load(path)["tunnels"]) if _stop_one(alias, path, boot, uid, config) == "stopped"]
     return {"version": 1, "stopped": stopped}
 
 

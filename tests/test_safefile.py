@@ -518,23 +518,80 @@ class RefusedTests(unittest.TestCase):
         self.assertEqual(safefile.Refused("x").detail, "")
 
 
+@unittest.skipUnless(hasattr(os, "getxattr") and hasattr(os, "removexattr") and shutil.which("setfacl"), "requires os xattr support and setfacl")
 class AclTests(Base):
-    def test_read_and_install_preserves_acl(self):
-        if not hasattr(os, "getxattr") or not shutil.which("setfacl"):
-            return
-        self.write("file_with_acl")
-        path = self.path("file_with_acl")
+    def setfacl(self, *args):
         try:
-            subprocess.run(["setfacl", "-m", "u:bin:r", path], check=True, capture_output=True)
-        except (subprocess.CalledProcessError, OSError):
-            return
+            subprocess.run(["setfacl", *args], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            self.skipTest("filesystem does not support POSIX ACLs: %s" % exc)
+
+    def test_read_and_install_preserves_acl(self):
+        self.write("file_with_acl")
+        self.setfacl("-m", "u:bin:r,g::---", self.path("file_with_acl"))
         acl = safefile.read_acl(self.dfd, "file_with_acl")
         self.assertIsNotNone(acl)
         _, info = safefile.read_nofollow(self.dfd, "file_with_acl", 100)
-        safefile.install(self.dfd, "file_with_acl", b"new content\n", 0o640, info, acl=acl)
+        safefile.install(self.dfd, "file_with_acl", b"new content\n", info.st_mode & 0o644, info, acl=acl)
         new_acl = safefile.read_acl(self.dfd, "file_with_acl")
         self.assertEqual(new_acl, acl)
         self.assertEqual(self.read("file_with_acl"), b"new content\n")
+
+    def test_inherited_default_acl_is_removed_when_old_file_had_no_acl(self):
+        self.write("plain", mode=0o600)
+        self.assertIsNone(safefile.read_acl(self.dfd, "plain"))
+        self.setfacl("-d", "-m", "u:bin:r", self.ssh)
+        _, info = safefile.read_nofollow(self.dfd, "plain", 100)
+        safefile.install(self.dfd, "plain", b"new content\n", 0o600, info, acl=None)
+        self.assertIsNone(safefile.read_acl(self.dfd, "plain"))
+        self.assertEqual(stat.S_IMODE(os.stat(self.path("plain")).st_mode), 0o600)
+        self.assertEqual(self.read("plain"), b"new content\n")
+
+    def test_masked_execute_bits_still_preserve_acl_entries(self):
+        self.write("exec_acl", mode=0o750)
+        self.setfacl("-m", "u:bin:rx,g::---", self.path("exec_acl"))
+        acl = safefile.read_acl(self.dfd, "exec_acl")
+        _, info = safefile.read_nofollow(self.dfd, "exec_acl", 100)
+        safefile.install(self.dfd, "exec_acl", b"new\n", info.st_mode & 0o644, info, acl=acl)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path("exec_acl")).st_mode), 0o640)
+        new_acl = safefile.read_acl(self.dfd, "exec_acl")
+        self.assertIsNotNone(new_acl)
+        self.assertTrue(safefile._acl_matches(new_acl, acl, 0o640))
+
+    def test_target_acl_or_mode_change_before_rename_is_a_conflict(self):
+        self.write("target", mode=0o600)
+        _, info = safefile.read_nofollow(self.dfd, "target", 100)
+
+        def add_acl(name):
+            self.setfacl("-m", "u:bin:r", self.path("target"))
+
+        self.assertEqual(self.refused(safefile.install, self.dfd, "target", b"new\n", 0o600, info, check=add_acl, acl=None), "conflict")
+
+        self.write("target2", mode=0o600)
+        _, info2 = safefile.read_nofollow(self.dfd, "target2", 100)
+
+        def widen_mode(name):
+            os.chmod(self.path("target2"), 0o644)
+
+        self.assertEqual(self.refused(safefile.install, self.dfd, "target2", b"new\n", 0o600, info2, check=widen_mode, acl=None), "conflict")
+
+    def test_temp_file_acl_or_mode_tampered_before_rename_is_refused(self):
+        self.write("target", mode=0o600)
+        _, info = safefile.read_nofollow(self.dfd, "target", 100)
+
+        def tamper_acl(name):
+            self.setfacl("-m", "u:bin:r,m::---", self.path(name))
+
+        self.assertEqual(self.refused(safefile.install, self.dfd, "target", b"new\n", 0o600, info, check=tamper_acl, acl=None), "acl")
+        self.assertEqual(self.read("target"), b"old\n")
+        self.assertEqual(self.names(), ["target"])
+
+        def tamper_mode(name):
+            os.chmod(self.path(name), 0o644)
+
+        self.assertEqual(self.refused(safefile.install, self.dfd, "target", b"new\n", 0o600, info, check=tamper_mode, acl=None), "mode")
+        self.assertEqual(self.read("target"), b"old\n")
+        self.assertEqual(self.names(), ["target"])
 
 
 if __name__ == "__main__":

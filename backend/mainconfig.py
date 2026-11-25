@@ -142,6 +142,7 @@ def _shown(snap: dict) -> dict:
         "after": after,
         "expect": snap["expect"],
         "refusal": snap["refusal"],
+        "acl": bool(snap.get("acl")),
     }
 
 
@@ -223,7 +224,7 @@ def apply(expect: str) -> dict:
         try:
             backup = _install(snap, _splice(data, insert_point(data)[0]))
         except safefile.Refused as exc:
-            return _failure(FAILURES.get(exc.code, "unsafe"), snap, exc.detail or exc.code, "group" if exc.code == "group" else "")
+            return _failure(FAILURES.get(exc.code, "unsafe"), snap, exc.detail or exc.code, exc.code if exc.code in ("group", "acl") else "")
         state = sshconfig.load(managed_path=hostfile.managed_path())["managedInclude"]
         return {"ok": True, "changed": True, "backup": backup, "include": state}
     finally:

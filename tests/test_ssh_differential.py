@@ -15,6 +15,18 @@ import sshconfig
 import mainconfig
 
 SSH = shutil.which("ssh")
+_SYSTEM_PATCH = None
+
+
+def setUpModule():
+    global _SYSTEM_PATCH
+    _SYSTEM_PATCH = mock.patch.object(sshconfig, "SYSTEM_CONFIG_PATH", "")
+    _SYSTEM_PATCH.start()
+
+
+def tearDownModule():
+    if _SYSTEM_PATCH is not None:
+        _SYSTEM_PATCH.stop()
 
 
 def write_tree(home, config, files):
