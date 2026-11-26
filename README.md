@@ -7,6 +7,10 @@
 <h1>OmaSSH</h1>
 </div>
 
+> [!NOTE]
+> **Original Author & Owner:** [Paulo Rivera](https://github.com/paulorivera27) (`paulorivera27`)  
+> This repository is a contributor fork of OmaSSH (originally `paulorivera27/omassh`, which GitHub detached from its fork network after the upstream repository was removed/renamed by the owner).
+
 An [Omarchy](https://omarchy.org) bar plugin that turns your `~/.ssh/config`
 into a host picker: click the SSH icon, type a few letters, press Enter,
 and you are in a terminal connected to that host. Think of it as a small,
